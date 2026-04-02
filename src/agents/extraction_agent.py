@@ -1,0 +1,169 @@
+"""
+extraction_agent.py — Agent 2: Contract Change Extraction.
+
+Receives the parsed texts of both documents plus the context map from
+ContextualizationAgent, and produces a validated ContractChangeOutput
+with every change (additions, deletions, modifications) identified.
+
+Uses LangChain with_structured_output() + Pydantic model_validate() for
+strict schema enforcement.
+"""
+
+import logging
+import time
+
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
+from pydantic import ValidationError
+
+from src.models import ContractChangeOutput
+
+logger = logging.getLogger(__name__)
+
+SYSTEM_PROMPT = """Eres un Auditor Legal Especializado en Análisis de Cambios Contractuales con certificación en compliance y gestión de riesgos.
+
+TU FUNCIÓN EXCLUSIVA:
+Utilizando el mapa contextual elaborado por el Analista Senior y los textos completos de ambos documentos, identificar con precisión quirúrgica CADA modificación introducida por la enmienda sobre el contrato original.
+
+TIPOS DE CAMBIOS QUE DEBES DETECTAR:
+- ADICIÓN: Contenido presente en la enmienda que no existía en el original (nuevas cláusulas, nuevas condiciones).
+- ELIMINACIÓN: Contenido presente en el original que fue removido en la enmienda.
+- MODIFICACIÓN: Contenido presente en ambos documentos pero alterado en la enmienda (cambios en plazos, montos, condiciones, partes).
+
+REGLAS DE PRECISIÓN:
+1. Usa los identificadores de sección exactos del mapa contextual y de los documentos.
+2. Para MODIFICACIONES: indica explícitamente qué decía el original y qué dice la enmienda.
+3. No inventes cambios — solo reporta lo que puedes verificar en el texto.
+4. Sé exhaustivo: un cambio no detectado puede tener consecuencias legales graves.
+5. Para campos numéricos (montos, plazos, porcentajes): indica el valor anterior y el nuevo.
+6. Prioriza cambios de alto impacto: indemnizaciones, limitaciones de responsabilidad, plazos, honorarios.
+
+CAMPOS DE SALIDA REQUERIDOS:
+- "sections_changed": Lista de identificadores de secciones modificadas (usar identificadores exactos del documento).
+- "topics_touched": Categorías legales/comerciales afectadas (ej: "Plazo", "Honorarios", "Terminación", "Confidencialidad", "Propiedad Intelectual").
+- "summary_of_the_change": Resumen ejecutivo narrativo detallado de TODOS los cambios. Debe referenciar secciones específicas y para cada cambio indicar: qué cambió, de qué valor, a qué valor.
+
+IMPORTANTE: Tu análisis debe ser tan preciso que un abogado pueda usarlo directamente sin releer los documentos.
+"""
+
+
+class ExtractionAgent:
+    """
+    Agent 2: Extracts and classifies all changes between original and amendment.
+
+    Responsibilities:
+    - Receive context map from ContextualizationAgent
+    - Identify every addition, deletion, and modification
+    - Produce Pydantic-validated ContractChangeOutput
+
+    Uses with_structured_output() for integrated LLM validation.
+    Falls back to model_validate() if structured output fails.
+    """
+
+    def __init__(self, model: str = "gpt-4o", temperature: float = 0):
+        self.llm = ChatOpenAI(model=model, temperature=temperature, timeout=60)
+        self.structured_llm = self.llm.with_structured_output(ContractChangeOutput)
+
+    def run(
+        self,
+        original_text: str,
+        amendment_text: str,
+        context_map: dict,
+        parent_trace,
+    ) -> ContractChangeOutput:
+        """
+        Extract all changes and return a validated ContractChangeOutput.
+
+        Args:
+            original_text: Extracted text from the original contract.
+            amendment_text: Extracted text from the amendment.
+            context_map: Structural context dict from ContextualizationAgent.
+            parent_trace: Langfuse trace to create child span under.
+
+        Returns:
+            Validated ContractChangeOutput instance.
+        """
+        import json as _json
+
+        span = parent_trace.span(
+            name="extraction_agent",
+            input={
+                "original_text_length": len(original_text),
+                "amendment_text_length": len(amendment_text),
+                "context_map_sections": len(context_map.get("structure_summary", {})),
+            },
+        )
+
+        start_time = time.time()
+
+        context_str = _json.dumps(context_map, ensure_ascii=False, indent=2)
+
+        human_content = f"""MAPA CONTEXTUAL (elaborado por el Analista Senior):
+---
+{context_str}
+---
+
+CONTRATO ORIGINAL:
+---
+{original_text}
+---
+
+ENMIENDA:
+---
+{amendment_text}
+---
+
+Extrae todos los cambios siguiendo el esquema requerido. Sé exhaustivo y preciso."""
+
+        messages = [
+            SystemMessage(content=SYSTEM_PROMPT),
+            HumanMessage(content=human_content),
+        ]
+
+        try:
+            # Primary strategy: with_structured_output (LLM-integrated validation)
+            result: ContractChangeOutput = self.structured_llm.invoke(messages)
+
+            # Explicit re-validation for belt-and-suspenders assurance
+            result = ContractChangeOutput.model_validate(result.model_dump())
+
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            span.end(
+                output={
+                    "sections_changed": result.sections_changed,
+                    "topics_touched": result.topics_touched,
+                    "summary_preview": result.summary_of_the_change[:300],
+                },
+                metadata={
+                    "latency_ms": latency_ms,
+                    "model": "gpt-4o",
+                    "sections_count": len(result.sections_changed),
+                    "topics_count": len(result.topics_touched),
+                },
+            )
+
+            logger.info(
+                f"[ExtractionAgent] Extracción completada: "
+                f"{len(result.sections_changed)} secciones, "
+                f"{len(result.topics_touched)} temas en {latency_ms}ms"
+            )
+            return result
+
+        except ValidationError as e:
+            latency_ms = int((time.time() - start_time) * 1000)
+            logger.error(f"[ExtractionAgent] Validación Pydantic falló: {e}")
+            span.end(
+                output={"error": str(e)},
+                metadata={"latency_ms": latency_ms},
+            )
+            raise
+
+        except Exception as e:
+            latency_ms = int((time.time() - start_time) * 1000)
+            logger.error(f"[ExtractionAgent] Error inesperado: {e}")
+            span.end(
+                output={"error": str(e)},
+                metadata={"latency_ms": latency_ms},
+            )
+            raise
