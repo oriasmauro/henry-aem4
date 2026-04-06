@@ -123,12 +123,13 @@ Construye el mapa contextual en formato JSON."""
                     "document_type": context_map.get("document_type"),
                     "parties_count": len(context_map.get("parties", [])),
                     "sections_mapped": len(context_map.get("structure_summary", {})),
+                    "context_map": context_map,
                 },
                 metadata={
                     "latency_ms": latency_ms,
                     "model": "gpt-4o",
-                    "input_tokens": usage.get("input_tokens") if usage else None,
-                    "output_tokens": usage.get("output_tokens") if usage else None,
+                    "prompt_tokens": usage.get("input_tokens") if usage else None,
+                    "completion_tokens": usage.get("output_tokens") if usage else None,
                 },
             )
 

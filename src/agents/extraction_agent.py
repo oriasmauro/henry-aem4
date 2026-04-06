@@ -62,7 +62,7 @@ class ExtractionAgent:
 
     def __init__(self, model: str = "gpt-4o", temperature: float = 0):
         self.llm = ChatOpenAI(model=model, temperature=temperature, timeout=60)
-        self.structured_llm = self.llm.with_structured_output(ContractChangeOutput)
+        self.structured_llm = self.llm.with_structured_output(ContractChangeOutput, include_raw=True)
 
     def run(
         self,
@@ -122,7 +122,9 @@ Extrae todos los cambios siguiendo el esquema requerido. Sé exhaustivo y precis
 
         try:
             # Primary strategy: with_structured_output (LLM-integrated validation)
-            result: ContractChangeOutput = self.structured_llm.invoke(messages)
+            raw_output = self.structured_llm.invoke(messages)
+            result: ContractChangeOutput = raw_output["parsed"]
+            usage = (raw_output["raw"].usage_metadata or {}) if raw_output.get("raw") else {}
 
             # Explicit re-validation for belt-and-suspenders assurance
             result = ContractChangeOutput.model_validate(result.model_dump())
@@ -140,6 +142,9 @@ Extrae todos los cambios siguiendo el esquema requerido. Sé exhaustivo y precis
                     "model": "gpt-4o",
                     "sections_count": len(result.sections_changed),
                     "topics_count": len(result.topics_touched),
+                    "prompt_tokens": usage.get("input_tokens"),
+                    "completion_tokens": usage.get("output_tokens"),
+                    "validation_status": "valid",
                 },
             )
 
@@ -153,11 +158,41 @@ Extrae todos los cambios siguiendo el esquema requerido. Sé exhaustivo y precis
         except ValidationError as e:
             latency_ms = int((time.time() - start_time) * 1000)
             logger.error(f"[ExtractionAgent] Validación Pydantic falló: {e}")
-            span.end(
-                output={"error": str(e)},
-                metadata={"latency_ms": latency_ms},
-            )
-            raise
+            logger.warning("[ExtractionAgent] Reintentando extracción...")
+            try:
+                raw_output = self.structured_llm.invoke(messages)
+                result = raw_output["parsed"]
+                result = ContractChangeOutput.model_validate(result.model_dump())
+                latency_ms = int((time.time() - start_time) * 1000)
+                usage = (raw_output["raw"].usage_metadata or {}) if raw_output.get("raw") else {}
+                span.end(
+                    output={
+                        "sections_changed": result.sections_changed,
+                        "topics_touched": result.topics_touched,
+                        "summary_preview": result.summary_of_the_change[:300],
+                    },
+                    metadata={
+                        "latency_ms": latency_ms,
+                        "model": "gpt-4o",
+                        "sections_count": len(result.sections_changed),
+                        "topics_count": len(result.topics_touched),
+                        "prompt_tokens": usage.get("input_tokens"),
+                        "completion_tokens": usage.get("output_tokens"),
+                        "validation_status": "valid_after_retry",
+                    },
+                )
+                logger.info("[ExtractionAgent] Reintento exitoso.")
+                return result
+            except Exception as retry_e:
+                logger.error(f"[ExtractionAgent] Reintento también falló: {retry_e}")
+                span.end(
+                    output={"error": str(e), "retry_error": str(retry_e)},
+                    metadata={
+                        "latency_ms": int((time.time() - start_time) * 1000),
+                        "validation_status": "failed",
+                    },
+                )
+                raise
 
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
