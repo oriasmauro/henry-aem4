@@ -1,11 +1,11 @@
 """
-contextualization_agent.py — Agent 1: Contract Contextualization.
+contextualization_agent.py — Agente 1: Contextualización de contratos.
 
-Receives the extracted text from both documents (original + amendment) and
-produces a structured context map (JSON dict) describing: document type,
-parties, date, general purpose, and clause structure summary.
+Recibe el texto extraído de ambos documentos (original y enmienda) y
+produce un mapa contextual estructurado (dict JSON) que describe: tipo de
+documento, partes, fecha, propósito general y resumen de la estructura de cláusulas.
 
-This agent does NOT extract changes — it only builds context for Agent 2.
+Este agente NO extrae cambios — solo construye contexto para el Agente 2.
 """
 
 import json
@@ -43,14 +43,14 @@ IMPORTANTE: El agente de extracción downstream depende de tu mapa contextual pa
 
 class ContextualizationAgent:
     """
-    Agent 1: Builds a structural context map from both contract texts.
+    Agente 1: Construye un mapa contextual estructural a partir de ambos textos contractuales.
 
-    Responsibilities:
-    - Identify document type, parties, date, purpose
-    - Map section correspondence between original and amendment
-    - Produce structured JSON consumed by ExtractionAgent
+    Responsabilidades:
+    - Identificar tipo de documento, partes, fecha y propósito
+    - Mapear la correspondencia de secciones entre original y enmienda
+    - Producir un JSON estructurado consumido por ExtractionAgent
 
-    Does NOT: extract specific changes, compare clause content.
+    NO hace: extraer cambios específicos, comparar contenido de cláusulas.
     """
 
     def __init__(self, model: str = "gpt-4o", temperature: float = 0):
@@ -63,16 +63,16 @@ class ContextualizationAgent:
         parent_trace,
     ) -> dict:
         """
-        Build context map from both document texts.
+        Construye el mapa contextual a partir de ambos textos del documento.
 
         Args:
-            original_text: Extracted text from the original contract.
-            amendment_text: Extracted text from the amendment.
-            parent_trace: Langfuse trace to create child span under.
+            original_text: Texto extraído del contrato original.
+            amendment_text: Texto extraído de la enmienda.
+            parent_trace: Trace de Langfuse para crear el span hijo.
 
         Returns:
-            dict with keys: document_type, parties, contract_date,
-                            general_purpose, structure_summary
+            dict con claves: document_type, parties, contract_date,
+                             general_purpose, structure_summary
         """
         span = parent_trace.span(
             name="contextualization_agent",
@@ -106,7 +106,7 @@ Construye el mapa contextual en formato JSON."""
             raw_content = response.content.strip()
             latency_ms = int((time.time() - start_time) * 1000)
 
-            # Strip markdown code fences if present
+            # Eliminar markdown code fences si están presentes
             if raw_content.startswith("```"):
                 lines = raw_content.split("\n")
                 raw_content = "\n".join(
@@ -144,7 +144,7 @@ Construye el mapa contextual en formato JSON."""
             logger.error(f"[ContextualizationAgent] JSON inválido en respuesta: {e}")
             logger.error(f"Respuesta cruda: {response.content[:500] if 'response' in dir() else 'N/A'}")
 
-            # Fallback: return minimal context so pipeline can continue
+            # Fallback: retornar contexto mínimo para que el pipeline pueda continuar
             fallback = {
                 "document_type": "Tipo no identificado",
                 "parties": [],

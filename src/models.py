@@ -2,25 +2,25 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class ContractChangeOutput(BaseModel):
-    """Validated output schema for contract change analysis."""
+    """Schema de salida validado para el análisis de cambios contractuales."""
 
     sections_changed: list[str] = Field(
         description=(
-            "List of section/clause identifiers that were modified, added, or removed. "
-            "Use the exact identifiers from the document (e.g., 'Cláusula 3', 'Sección 2.1')."
+            "Lista de identificadores de sección/cláusula que fueron modificados, agregados o eliminados. "
+            "Usar los identificadores exactos del documento (ej. 'Cláusula 3', 'Sección 2.1')."
         )
     )
     topics_touched: list[str] = Field(
         description=(
-            "Legal or commercial categories affected by the changes "
-            "(e.g., 'Plazo', 'Honorarios', 'Confidencialidad', 'Terminación')."
+            "Categorías legales o comerciales afectadas por los cambios "
+            "(ej. 'Plazo', 'Honorarios', 'Confidencialidad', 'Terminación')."
         )
     )
     summary_of_the_change: str = Field(
         description=(
-            "Detailed narrative summary of ALL changes between the original contract "
-            "and the amendment. Must reference specific sections and state: what changed, "
-            "from what value, to what value."
+            "Resumen narrativo detallado de TODOS los cambios entre el contrato original "
+            "y la enmienda. Debe referenciar secciones específicas e indicar: qué cambió, "
+            "de qué valor, a qué valor."
         )
     )
 

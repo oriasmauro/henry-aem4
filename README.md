@@ -488,22 +488,13 @@ Costo estimado GPT-4o                                ~$0.05–$0.10 USD
 
 ### Cómo GPT-4o tokeniza imágenes (Vision)
 
-Con `detail="high"`, GPT-4o divide la imagen en tiles de 512×512 px. El costo en tokens se calcula así:
+> **Nota:** El mecanismo exacto de tokenización de imágenes varía según la versión del modelo y puede cambiar con actualizaciones de OpenAI. Los valores a continuación son aproximaciones orientativas.
 
-```
-1. La imagen se escala para que quepa en 2048×2048 px (manteniendo proporción).
-2. Se escala nuevamente para que el lado más corto sea exactamente 768 px.
-3. Se divide en tiles de 512×512.
-4. Cada tile = 170 tokens fijos + 85 tokens base.
-
-Ejemplo: imagen 1024×1024
-  → 4 tiles
-  → 4 × 170 + 85 = 765 tokens de imagen
-```
+Con `detail="high"`, el modelo analiza la imagen con alta fidelidad. El costo en tokens por imagen depende de su resolución y del mecanismo interno del modelo en uso:
 
 | | `detail="low"` | `detail="high"` |
 |---|---|---|
-| Tokens de imagen | 85 (fijo) | ~765 (ej. 1024×1024) |
+| Tokens de imagen | Bajo (fijo) | Mayor, variable según resolución |
 | Costo aprox. por imagen | ~$0.0004 | ~$0.004 |
 | Lectura de texto denso | Deficiente | Precisa |
 

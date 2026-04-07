@@ -1,8 +1,8 @@
 """
-image_parser.py — Multimodal parsing of contract images via GPT-4o Vision.
+image_parser.py — Parsing multimodal de imágenes de contratos vía GPT-4o Vision.
 
-Each call extracts the complete structured text from one image and registers
-a child Langfuse span with input/output/latency/token metadata.
+Cada llamada extrae el texto estructurado completo de una imagen y registra
+un span hijo de Langfuse con metadata de input/output/latencia/tokens.
 """
 
 import base64
@@ -35,7 +35,7 @@ Reglas obligatorias:
 
 
 def _encode_image(image_path: str) -> tuple[str, str]:
-    """Encode image to base64 and return (b64_string, media_type)."""
+    """Codifica la imagen en base64 y retorna (b64_string, media_type)."""
     path = Path(image_path)
     if not path.exists():
         raise FileNotFoundError(f"Imagen no encontrada: {image_path}")
@@ -63,18 +63,18 @@ def parse_contract_image(
     max_retries: int = 3,
 ) -> str:
     """
-    Parse a contract image using GPT-4o Vision and return the extracted text.
+    Parsea una imagen de contrato usando GPT-4o Vision y retorna el texto extraído.
 
     Args:
-        image_path: Path to the JPEG/PNG contract image.
-        openai_client: Initialized OpenAI client.
-        langfuse_client: Initialized Langfuse client (unused directly; tracing via parent_trace).
-        parent_trace: Langfuse trace object to create child spans under.
-        span_name: Name for this Langfuse span.
-        max_retries: Number of retry attempts on transient API errors.
+        image_path: Ruta a la imagen JPEG/PNG del contrato.
+        openai_client: Cliente OpenAI inicializado.
+        langfuse_client: Cliente Langfuse inicializado (no usado directamente; trazado vía parent_trace).
+        parent_trace: Objeto trace de Langfuse para crear spans hijos.
+        span_name: Nombre para este span de Langfuse.
+        max_retries: Número de reintentos ante errores transitorios de la API.
 
     Returns:
-        Extracted text string preserving document structure.
+        String de texto extraído preservando la estructura del documento.
     """
     span = parent_trace.span(
         name=span_name,
@@ -133,15 +133,15 @@ def parse_contract_image(
                 },
             )
 
-            logger.info(f"[{span_name}] Parsed {len(extracted_text)} chars in {latency_ms}ms")
+            logger.info(f"[{span_name}] Extraídos {len(extracted_text)} caracteres en {latency_ms}ms")
             return extracted_text
 
         except (RateLimitError, APITimeoutError) as e:
             last_error = e
             delay = 2.0 * (2 ** attempt)
             logger.warning(
-                f"[{span_name}] API error on attempt {attempt + 1}/{max_retries}: {e}. "
-                f"Retrying in {delay}s..."
+                f"[{span_name}] Error de API en intento {attempt + 1}/{max_retries}: {e}. "
+                f"Reintentando en {delay}s..."
             )
             if attempt < max_retries - 1:
                 time.sleep(delay)
@@ -154,14 +154,14 @@ def parse_contract_image(
             raise
 
         except Exception as e:
-            logger.error(f"[{span_name}] Unexpected error: {e}")
+            logger.error(f"[{span_name}] Error inesperado: {e}")
             span.end(
                 output={"error": str(e)},
                 metadata={"latency_ms": int((time.time() - start_time) * 1000)},
             )
             raise
 
-    # All retries exhausted
+    # Reintentos agotados
     span.end(
         output={"error": str(last_error)},
         metadata={"latency_ms": int((time.time() - start_time) * 1000)},

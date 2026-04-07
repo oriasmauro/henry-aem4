@@ -1,12 +1,12 @@
 """
-extraction_agent.py — Agent 2: Contract Change Extraction.
+extraction_agent.py — Agente 2: Extracción de cambios contractuales.
 
-Receives the parsed texts of both documents plus the context map from
-ContextualizationAgent, and produces a validated ContractChangeOutput
-with every change (additions, deletions, modifications) identified.
+Recibe los textos parseados de ambos documentos más el mapa contextual del
+ContextualizationAgent, y produce un ContractChangeOutput validado
+con cada cambio (adiciones, eliminaciones, modificaciones) identificado.
 
-Uses LangChain with_structured_output() + Pydantic model_validate() for
-strict schema enforcement.
+Usa LangChain with_structured_output() + Pydantic model_validate() para
+aplicación estricta del schema.
 """
 
 import logging
@@ -49,15 +49,15 @@ IMPORTANTE: Tu análisis debe ser tan preciso que un abogado pueda usarlo direct
 
 class ExtractionAgent:
     """
-    Agent 2: Extracts and classifies all changes between original and amendment.
+    Agente 2: Extrae y clasifica todos los cambios entre el original y la enmienda.
 
-    Responsibilities:
-    - Receive context map from ContextualizationAgent
-    - Identify every addition, deletion, and modification
-    - Produce Pydantic-validated ContractChangeOutput
+    Responsabilidades:
+    - Recibir el mapa contextual del ContextualizationAgent
+    - Identificar cada adición, eliminación y modificación
+    - Producir un ContractChangeOutput validado por Pydantic
 
-    Uses with_structured_output() for integrated LLM validation.
-    Falls back to model_validate() if structured output fails.
+    Usa with_structured_output() para validación integrada con el LLM.
+    Recurre a model_validate() si el structured output falla.
     """
 
     def __init__(self, model: str = "gpt-4o", temperature: float = 0):
@@ -72,16 +72,16 @@ class ExtractionAgent:
         parent_trace,
     ) -> ContractChangeOutput:
         """
-        Extract all changes and return a validated ContractChangeOutput.
+        Extrae todos los cambios y retorna un ContractChangeOutput validado.
 
         Args:
-            original_text: Extracted text from the original contract.
-            amendment_text: Extracted text from the amendment.
-            context_map: Structural context dict from ContextualizationAgent.
-            parent_trace: Langfuse trace to create child span under.
+            original_text: Texto extraído del contrato original.
+            amendment_text: Texto extraído de la enmienda.
+            context_map: Dict de contexto estructural del ContextualizationAgent.
+            parent_trace: Trace de Langfuse para crear el span hijo.
 
         Returns:
-            Validated ContractChangeOutput instance.
+            Instancia validada de ContractChangeOutput.
         """
         import json as _json
 
@@ -121,12 +121,12 @@ Extrae todos los cambios siguiendo el esquema requerido. Sé exhaustivo y precis
         ]
 
         try:
-            # Primary strategy: with_structured_output (LLM-integrated validation)
+            # Estrategia principal: with_structured_output (validación integrada con LLM)
             raw_output = self.structured_llm.invoke(messages)
             result: ContractChangeOutput = raw_output["parsed"]
             usage = (raw_output["raw"].usage_metadata or {}) if raw_output.get("raw") else {}
 
-            # Explicit re-validation for belt-and-suspenders assurance
+            # Re-validación explícita como capa adicional de seguridad
             result = ContractChangeOutput.model_validate(result.model_dump())
 
             latency_ms = int((time.time() - start_time) * 1000)

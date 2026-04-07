@@ -1,10 +1,10 @@
 """
-main.py — LegalMove: Autonomous Contract Comparison Pipeline.
+main.py — LegalMove: Pipeline autónomo de comparación de contratos.
 
-Usage:
-    python src/main.py <original_image_path> <amendment_image_path>
+Uso:
+    python src/main.py <ruta_imagen_original> <ruta_imagen_enmienda>
 
-Example:
+Ejemplo:
     python src/main.py data/test_contracts/documento_1__original.jpg \\
                        data/test_contracts/documento_1__enmienda.jpg
 """
@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── Validate environment variables before any import that needs them ──────────
+# ── Validar variables de entorno antes de cualquier import que las requiera ───
 _REQUIRED_VARS = [
     "OPENAI_API_KEY",
     "LANGFUSE_PUBLIC_KEY",
@@ -36,7 +36,7 @@ def _validate_env() -> None:
 
 _validate_env()
 
-# ── Imports after env validation ──────────────────────────────────────────────
+# ── Imports después de validar el entorno ─────────────────────────────────────
 from openai import OpenAI
 from langfuse import Langfuse
 
@@ -44,7 +44,7 @@ from src.image_parser import parse_contract_image
 from src.agents import ContextualizationAgent, ExtractionAgent
 from src.models import ContractChangeOutput
 
-# ── Logging setup ─────────────────────────────────────────────────────────────
+# ── Configuración de logging ──────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
@@ -55,24 +55,24 @@ logger = logging.getLogger("legalmove")
 
 def run_pipeline(original_image_path: str, amendment_image_path: str) -> ContractChangeOutput:
     """
-    Execute the full LegalMove contract comparison pipeline.
+    Ejecuta el pipeline completo de comparación de contratos LegalMove.
 
-    Pipeline stages:
-        1. parse_original_contract  — GPT-4o Vision on original image
-        2. parse_amendment_contract — GPT-4o Vision on amendment image
-        3. contextualization_agent  — Build structural context map
-        4. extraction_agent         — Extract + validate all changes
+    Etapas del pipeline:
+        1. parse_original_contract  — GPT-4o Vision sobre imagen original
+        2. parse_amendment_contract — GPT-4o Vision sobre imagen de enmienda
+        3. contextualization_agent  — Construye mapa contextual estructural
+        4. extraction_agent         — Extrae y valida todos los cambios
 
-    All stages emit child Langfuse spans under the root "contract-analysis" trace.
+    Todas las etapas emiten spans hijos de Langfuse bajo el trace raíz "contract-analysis".
 
     Args:
-        original_image_path: Path to the original contract image.
-        amendment_image_path: Path to the amendment image.
+        original_image_path: Ruta a la imagen del contrato original.
+        amendment_image_path: Ruta a la imagen de la enmienda.
 
     Returns:
-        Validated ContractChangeOutput with sections, topics, and summary.
+        ContractChangeOutput validado con secciones, temas y resumen.
     """
-    # ── Clients ───────────────────────────────────────────────────────────────
+    # ── Clientes ──────────────────────────────────────────────────────────────
     openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
     langfuse_client = Langfuse(
@@ -81,7 +81,7 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
         host=os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
     )
 
-    # ── Root trace ────────────────────────────────────────────────────────────
+    # ── Trace raíz ────────────────────────────────────────────────────────────
     trace = langfuse_client.trace(
         name="contract-analysis",
         metadata={
@@ -97,7 +97,7 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
     logger.info(f"  Enmienda : {amendment_image_path}")
     logger.info("=" * 60)
 
-    # ── Paso 1: Parse original contract ───────────────────────────────────────
+    # ── Paso 1: Parsear contrato original ─────────────────────────────────────
     logger.info("[1/4] Parseando contrato original...")
     original_text = parse_contract_image(
         image_path=original_image_path,
@@ -108,7 +108,7 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
     )
     logger.info(f"      Extraídos {len(original_text)} caracteres.")
 
-    # ── Paso 2: Parse amendment ───────────────────────────────────────────────
+    # ── Paso 2: Parsear enmienda ───────────────────────────────────────────────
     logger.info("[2/4] Parseando enmienda...")
     amendment_text = parse_contract_image(
         image_path=amendment_image_path,
@@ -119,7 +119,7 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
     )
     logger.info(f"      Extraídos {len(amendment_text)} caracteres.")
 
-    # ── Paso 3: Contextualization Agent ───────────────────────────────────────
+    # ── Paso 3: Agente de contextualización ───────────────────────────────────
     logger.info("[3/4] Construyendo mapa contextual (Agente 1)...")
     context_agent = ContextualizationAgent(model="gpt-4o")
     context_map = context_agent.run(
@@ -132,7 +132,7 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
         f"{len(context_map.get('structure_summary', {}))} secciones mapeadas."
     )
 
-    # ── Paso 4: Extraction Agent ──────────────────────────────────────────────
+    # ── Paso 4: Agente de extracción ──────────────────────────────────────────
     logger.info("[4/4] Extrayendo cambios (Agente 2)...")
     extraction_agent = ExtractionAgent(model="gpt-4o")
     result: ContractChangeOutput = extraction_agent.run(
@@ -146,7 +146,7 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
         f"{len(result.topics_touched)} temas afectados."
     )
 
-    # ── Finalize trace ────────────────────────────────────────────────────────
+    # ── Finalizar trace ───────────────────────────────────────────────────────
     trace.update(
         output=result.model_dump(),
         metadata={
@@ -162,7 +162,7 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
 
 
 def _print_result(result: ContractChangeOutput) -> None:
-    """Print the final result as formatted JSON to stdout."""
+    """Imprime el resultado final como JSON formateado en stdout."""
     print("\n" + "=" * 60)
     print("RESULTADO DEL ANÁLISIS")
     print("=" * 60)
@@ -182,7 +182,7 @@ def main() -> None:
     original_path = sys.argv[1]
     amendment_path = sys.argv[2]
 
-    # Validate paths
+    # Validar rutas
     for path in [original_path, amendment_path]:
         if not Path(path).exists():
             print(f"Error: archivo no encontrado: {path}")
