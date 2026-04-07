@@ -161,7 +161,7 @@ def parse_contract_image(
             )
             raise
 
-    # Reintentos agotados
+    # Si agotamos los reintentos, registramos el error final y lanzamos excepción
     span.end(
         output={"error": str(last_error)},
         metadata={"latency_ms": int((time.time() - start_time) * 1000)},

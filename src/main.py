@@ -66,8 +66,8 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
     Todas las etapas emiten spans hijos de Langfuse bajo el trace raíz "contract-analysis".
 
     Args:
-        original_image_path: Ruta a la imagen del contrato original.
-        amendment_image_path: Ruta a la imagen de la enmienda.
+        original_image_path: Path a la imagen del contrato original.
+        amendment_image_path: Path a la imagen de la enmienda.
 
     Returns:
         ContractChangeOutput validado con secciones, temas y resumen.
@@ -81,7 +81,7 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
         host=os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
     )
 
-    # ── Trace raíz ────────────────────────────────────────────────────────────
+    # ── Trace root ────────────────────────────────────────────────────────────
     trace = langfuse_client.trace(
         name="contract-analysis",
         metadata={
@@ -146,7 +146,7 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
         f"{len(result.topics_touched)} temas afectados."
     )
 
-    # ── Finalizar trace ───────────────────────────────────────────────────────
+    # ── End trace ───────────────────────────────────────────────────────
     trace.update(
         output=result.model_dump(),
         metadata={
@@ -182,7 +182,7 @@ def main() -> None:
     original_path = sys.argv[1]
     amendment_path = sys.argv[2]
 
-    # Validar rutas
+    # Validar paths de entrada
     for path in [original_path, amendment_path]:
         if not Path(path).exists():
             print(f"Error: archivo no encontrado: {path}")
