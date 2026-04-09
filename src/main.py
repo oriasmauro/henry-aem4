@@ -135,33 +135,35 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
     # ── Paso 4: Agente de extracción ──────────────────────────────────────────
     logger.info("[4/4] Extrayendo cambios (Agente 2)...")
     extraction_agent = ExtractionAgent(model="gpt-4o")
-    result: ContractChangeOutput = extraction_agent.run(
-        original_text=original_text,
-        amendment_text=amendment_text,
-        context_map=context_map,
-        parent_trace=trace,
-    )
-    if not result.sections_changed and not result.topics_touched:
-        logger.info("      El agente no detectó cambios entre los documentos.")
-    else:
-        logger.info(
-            f"      Detectados {len(result.sections_changed)} secciones modificadas, "
-            f"{len(result.topics_touched)} temas afectados."
+    try:
+        result: ContractChangeOutput = extraction_agent.run(
+            original_text=original_text,
+            amendment_text=amendment_text,
+            context_map=context_map,
+            parent_trace=trace,
         )
-
-    # ── End trace ───────────────────────────────────────────────────────
-    trace.update(
-        output=result.model_dump(),
-        metadata={
-            "sections_changed_count": len(result.sections_changed),
-            "topics_touched_count": len(result.topics_touched),
-            "document_type": context_map.get("document_type"),
-        },
-    )
-    langfuse_client.flush()
-    logger.info("Traza Langfuse enviada.")
-
-    return result
+        if not result.sections_changed and not result.topics_touched:
+            logger.info("      El agente no detectó cambios entre los documentos.")
+        else:
+            logger.info(
+                f"      Detectados {len(result.sections_changed)} secciones modificadas, "
+                f"{len(result.topics_touched)} temas afectados."
+            )
+        trace.update(
+            output=result.model_dump(),
+            metadata={
+                "sections_changed_count": len(result.sections_changed),
+                "topics_touched_count": len(result.topics_touched),
+                "document_type": context_map.get("document_type"),
+            },
+        )
+        return result
+    except Exception as e:
+        trace.update(metadata={"error": str(e)})
+        raise
+    finally:
+        langfuse_client.flush()
+        logger.info("Traza Langfuse enviada.")
 
 
 def _print_result(result: ContractChangeOutput) -> None:

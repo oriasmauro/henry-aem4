@@ -84,50 +84,57 @@ sequenceDiagram
 
     Usuario->>Main: python main.py contrato.png adenda.png
 
-    Main->>Langfuse: Iniciar trace "contract-analysis"
-    Langfuse-->>Main: trace_id
+    Main->>Langfuse: trace("contract-analysis")
 
     Note over Main,GPT4o: ── Etapa 1: Parsing Multimodal ──
     Note over Parser,GPT4o: Hasta 3 reintentos con backoff exponencial ante RateLimitError o APITimeoutError
 
-    Main->>Langfuse: Iniciar span "parse_original_contract"
-    Main->>Parser: parse_contract_image(path_original)
+    Main->>Parser: parse_contract_image(path_original, parent_trace)
+    activate Parser
+    Parser->>Langfuse: span("parse_original_contract")
     Parser->>Parser: Validar archivo (tipo, tamaño)
     Parser->>Parser: Codificar imagen en base64
     Parser->>GPT4o: POST /chat/completions (imagen base64 + prompt)
     GPT4o-->>Parser: Texto extraído con jerarquía de secciones
+    Parser->>Langfuse: span.end(output=texto, tokens, latencia)
     Parser-->>Main: contract_text (str)
-    Main->>Langfuse: Cerrar span (input=path, output=texto, tokens, latencia)
+    deactivate Parser
 
-    Main->>Langfuse: Iniciar span "parse_amendment_contract"
-    Main->>Parser: parse_contract_image(path_adenda)
+    Main->>Parser: parse_contract_image(path_adenda, parent_trace)
+    activate Parser
+    Parser->>Langfuse: span("parse_amendment_contract")
     Parser->>Parser: Validar archivo (tipo, tamaño)
     Parser->>Parser: Codificar imagen en base64
     Parser->>GPT4o: POST /chat/completions (imagen base64 + prompt)
     GPT4o-->>Parser: Texto extraído con jerarquía de secciones
+    Parser->>Langfuse: span.end(output=texto, tokens, latencia)
     Parser-->>Main: amendment_text (str)
-    Main->>Langfuse: Cerrar span (input=path, output=texto, tokens, latencia)
+    deactivate Parser
 
     Note over Main,Agent1: ── Etapa 2: Agente 1 — Contextualización ──
 
-    Main->>Langfuse: Iniciar span "contextualization_agent"
-    Main->>Agent1: run(contract_text, amendment_text)
+    Main->>Agent1: run(contract_text, amendment_text, parent_trace)
+    activate Agent1
+    Agent1->>Langfuse: span("contextualization_agent")
     Agent1->>Agent1: Construir prompt con ambos textos
     Agent1->>GPT4o: POST /chat/completions (system prompt + textos)
     GPT4o-->>Agent1: Mapa contextual (JSON)
     Agent1->>Agent1: json.loads() → context_map
     alt JSON válido
+        Agent1->>Langfuse: span.end(output=mapa, tokens, latencia)
         Agent1-->>Main: context_map (dict)
     else JSONDecodeError
         Agent1->>Agent1: fallback → contexto mínimo
+        Agent1->>Langfuse: span.end(fallback=true)
         Agent1-->>Main: context_map (dict parcial)
     end
-    Main->>Langfuse: Cerrar span (input=textos, output=mapa, tokens, latencia)
+    deactivate Agent1
 
     Note over Main,Agent2: ── Etapa 3: Agente 2 — Extracción de cambios ──
 
-    Main->>Langfuse: Iniciar span "extraction_agent"
-    Main->>Agent2: run(contract_text, amendment_text, context_map)
+    Main->>Agent2: run(contract_text, amendment_text, context_map, parent_trace)
+    activate Agent2
+    Agent2->>Langfuse: span("extraction_agent")
     Agent2->>Agent2: Construir prompt con mapa + textos completos
     Agent2->>GPT4o: POST /chat/completions (system prompt + contexto + textos)
     Note right of GPT4o: with_structured_output(ContractChangeOutput)
@@ -139,19 +146,20 @@ sequenceDiagram
     activate Pydantic
     alt Validación Pydantic
         Pydantic-->>Agent2: ContractChangeOutput validado
+        Agent2->>Langfuse: span.end(output=JSON, tokens, latencia, status=valid)
         Agent2-->>Main: ContractChangeOutput
-        Main->>Langfuse: Cerrar span (output=JSON, tokens, latencia, status=valid)
-        Main->>Langfuse: Cerrar trace raíz "contract-analysis"
+        Main->>Langfuse: trace.update() + flush()
         Main-->>Usuario: ✅ JSON validado impreso en consola
     else ValidationError
         Pydantic-->>Agent2: ValidationError con campos inválidos
         Agent2->>Agent2: log error con mensaje claro
+        Agent2->>Langfuse: span.end(status=failed)
         Agent2-->>Main: raise ValidationError
-        Main->>Langfuse: Cerrar span (status=failed)
-        Main->>Langfuse: Cerrar trace raíz "contract-analysis"
+        Main->>Langfuse: trace.update(error) + flush()
         Main-->>Usuario: ❌ Error detallado con campos que fallaron
     end
     deactivate Pydantic
+    deactivate Agent2
 ```
 
 
