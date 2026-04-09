@@ -133,18 +133,18 @@ sequenceDiagram
 
     EA->>PYD: model_validate(output)
     activate PYD
-    alt Validación exitosa
+    alt Validación Pydantic
         PYD-->>EA: ContractChangeOutput validado
         EA-->>CLI: ContractChangeOutput
     else ValidationError
         PYD-->>EA: error con detalle de campos
-        EA->>EA: log error
+        EA->>EA: log error con mensaje claro
         EA-->>CLI: raise ValidationError
     end
     deactivate PYD
     deactivate EA
 
-    alt Validación exitosa
+    alt Validación Pydantic
         CLI->>CLI: print(result.model_dump_json(indent=2))
         Note over CLI,PYD: Pipeline completo ✅ — JSON validado en stdout
     else ValidationError
