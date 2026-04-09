@@ -73,83 +73,85 @@ El siguiente diagrama muestra el flujo de mensajes entre los componentes del sis
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    participant CLI as 🖥️ CLI (main.py)
-    participant IP as 🔍 image_parser
-    participant GPT as 🧠 GPT-4o Vision
-    participant CA as 🧠 Agente 1<br/>Contextualization
-    participant EA as 🔎 Agente 2<br/>Extraction
-    participant PYD as ✅ Pydantic
+    actor Usuario as 👤 Usuario
+    participant Main as 🚀 main.py
+    participant Langfuse as 📊 Langfuse
+    participant Parser as 📡 image_parser.py
+    participant GPT4o as 🤖 GPT-4o Vision API
+    participant Agent1 as 🧠 ContextualizationAgent
+    participant Agent2 as 🔍 ExtractionAgent
+    participant Pydantic as ✅ Pydantic
 
-    Note over CLI,GPT: ── Paso 1: Parsing Multimodal ──
+    Usuario->>Main: python main.py contrato.png adenda.png
 
-    CLI->>IP: parse_contract_image(original.jpg)
-    activate IP
-    IP->>IP: validar formato · leer archivo → base64
-    IP->>GPT: API call con imagen base64 + system prompt
-    activate GPT
-    GPT-->>IP: texto_original (structured text)
-    deactivate GPT
-    IP-->>CLI: texto_original
-    deactivate IP
+    Main->>Langfuse: Iniciar trace "contract-analysis"
+    Langfuse-->>Main: trace_id
 
-    CLI->>IP: parse_contract_image(enmienda.jpg)
-    activate IP
-    IP->>IP: validar formato · leer archivo → base64
-    IP->>GPT: API call con imagen base64 + system prompt
-    activate GPT
-    GPT-->>IP: texto_enmienda (structured text)
-    deactivate GPT
-    IP-->>CLI: texto_enmienda
-    deactivate IP
+    Note over Main,GPT4o: ── Etapa 1: Parsing Multimodal ──
+    Note over Parser,GPT4o: Hasta 3 reintentos con backoff exponencial ante RateLimitError o APITimeoutError
 
-    Note over CLI,EA: ── Paso 2: Contextualización ──
+    Main->>Langfuse: Iniciar span "parse_original_contract"
+    Main->>Parser: parse_contract_image(path_original)
+    Parser->>Parser: Validar archivo (tipo, tamaño)
+    Parser->>Parser: Codificar imagen en base64
+    Parser->>GPT4o: POST /chat/completions (imagen base64 + prompt)
+    GPT4o-->>Parser: Texto extraído con jerarquía de secciones
+    Parser-->>Main: contract_text (str)
+    Main->>Langfuse: Cerrar span (input=path, output=texto, tokens, latencia)
 
-    CLI->>CA: run(texto_original, texto_enmienda)
-    activate CA
-    CA->>GPT: ChatOpenAI.invoke([system_msg, human_msg])
-    activate GPT
-    GPT-->>CA: respuesta con mapa contextual
-    deactivate GPT
-    CA->>CA: parsear JSON del mapa contextual
+    Main->>Langfuse: Iniciar span "parse_amendment_contract"
+    Main->>Parser: parse_contract_image(path_adenda)
+    Parser->>Parser: Validar archivo (tipo, tamaño)
+    Parser->>Parser: Codificar imagen en base64
+    Parser->>GPT4o: POST /chat/completions (imagen base64 + prompt)
+    GPT4o-->>Parser: Texto extraído con jerarquía de secciones
+    Parser-->>Main: amendment_text (str)
+    Main->>Langfuse: Cerrar span (input=path, output=texto, tokens, latencia)
+
+    Note over Main,Agent1: ── Etapa 2: Agente 1 — Contextualización ──
+
+    Main->>Langfuse: Iniciar span "contextualization_agent"
+    Main->>Agent1: run(contract_text, amendment_text)
+    Agent1->>Agent1: Construir prompt con ambos textos
+    Agent1->>GPT4o: POST /chat/completions (system prompt + textos)
+    GPT4o-->>Agent1: Mapa contextual (JSON)
+    Agent1->>Agent1: json.loads() → context_map
     alt JSON válido
-        CA-->>CLI: context_map (dict)
-    else JSON inválido
-        CA->>CA: fallback → contexto mínimo
-        CA-->>CLI: context_map (dict parcial)
+        Agent1-->>Main: context_map (dict)
+    else JSONDecodeError
+        Agent1->>Agent1: fallback → contexto mínimo
+        Agent1-->>Main: context_map (dict parcial)
     end
-    deactivate CA
+    Main->>Langfuse: Cerrar span (input=textos, output=mapa, tokens, latencia)
 
-    Note over CLI,PYD: ── Paso 3: Extracción de Cambios ──
+    Note over Main,Agent2: ── Etapa 3: Agente 2 — Extracción de cambios ──
 
-    CLI->>EA: run(texto_original, texto_enmienda, context_map)
-    activate EA
-    EA->>GPT: ChatOpenAI.with_structured_output().invoke()
-    activate GPT
-    GPT-->>EA: ContractChangeOutput (structured)
-    deactivate GPT
+    Main->>Langfuse: Iniciar span "extraction_agent"
+    Main->>Agent2: run(contract_text, amendment_text, context_map)
+    Agent2->>Agent2: Construir prompt con mapa + textos completos
+    Agent2->>GPT4o: POST /chat/completions (system prompt + contexto + textos)
+    Note right of GPT4o: with_structured_output(ContractChangeOutput)
+    GPT4o-->>Agent2: JSON estructurado (structured output)
 
-    Note over EA,PYD: ── Paso 4: Validación Pydantic ──
+    Note over Agent2,Pydantic: ── Etapa 4: Validación Pydantic ──
 
-    EA->>PYD: model_validate(output)
-    activate PYD
+    Agent2->>Pydantic: model_validate(raw_output)
+    activate Pydantic
     alt Validación Pydantic
-        PYD-->>EA: ContractChangeOutput validado
-        EA-->>CLI: ContractChangeOutput
+        Pydantic-->>Agent2: ContractChangeOutput validado
+        Agent2-->>Main: ContractChangeOutput
+        Main->>Langfuse: Cerrar span (output=JSON, tokens, latencia, status=valid)
+        Main->>Langfuse: Cerrar trace raíz "contract-analysis"
+        Main-->>Usuario: ✅ JSON validado impreso en consola
     else ValidationError
-        PYD-->>EA: error con detalle de campos
-        EA->>EA: log error con mensaje claro
-        EA-->>CLI: raise ValidationError
+        Pydantic-->>Agent2: ValidationError con campos inválidos
+        Agent2->>Agent2: log error con mensaje claro
+        Agent2-->>Main: raise ValidationError
+        Main->>Langfuse: Cerrar span (status=failed)
+        Main->>Langfuse: Cerrar trace raíz "contract-analysis"
+        Main-->>Usuario: ❌ Error detallado con campos que fallaron
     end
-    deactivate PYD
-    deactivate EA
-
-    alt Validación Pydantic
-        CLI->>CLI: print(result.model_dump_json(indent=2))
-        Note over CLI,PYD: Pipeline completo ✅ — JSON validado en stdout
-    else ValidationError
-        Note over CLI,PYD: Pipeline abortado ❌ — excepción propagada con mensaje claro
-    end
+    deactivate Pydantic
 ```
 
 
