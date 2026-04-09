@@ -9,46 +9,67 @@ Sistema multi-agente que procesa imágenes escaneadas de contratos legales y sus
 El sistema opera en cuatro pasos secuenciales: las imágenes de entrada se convierten a texto mediante visión multimodal (GPT-4o), luego dos agentes LLM especializados procesan ese texto en pipeline — el primero construye un mapa contextual del documento y el segundo extrae los cambios usando ese mapa como referencia —, y el resultado se valida con Pydantic.
 
 ```mermaid
-graph TB
-    subgraph ENTRADA["Entrada"]
-        IMG1["Imagen Contrato Original<br/>(JPG/PNG)"]
-        IMG2["Imagen Enmienda<br/>(JPG/PNG)"]
-    end
+flowchart TB
+ subgraph Entrada["Entrada"]
+        A(["Imagen: Contrato Original"])
+        B(["Imagen: Adenda"])
+  end
+ subgraph PARSING["Parsing Multimodal"]
+        C["GPT-4o Vision + base64"]
+        D["GPT-4o Vision + base64"]
+  end
 
-    subgraph PARSING["Parsing Multimodal"]
-        GPT1["GPT-4o Vision<br/>detail=high · temperature=0"]
-        GPT2["GPT-4o Vision<br/>detail=high · temperature=0"]
-        TXT1["Texto Original<br/>Estructurado"]
-        TXT2["Texto Enmienda<br/>Estructurado"]
-    end
-
-    subgraph AGENTES["Pipeline Multi-Agente"]
-        AG1["Agente 1 — ContextualizationAgent<br/>Analista Senior · ChatOpenAI gpt-4o"]
-        MAPA["Mapa Contextual<br/>document_type · parties<br/>contract_date · structure_summary"]
-        AG2["Agente 2 — ExtractionAgent<br/>Auditor Legal · with_structured_output()"]
-    end
-
-    subgraph VALIDACION["Validación y Salida"]
-        PYD["Pydantic model_validate()"]
-        JSON_OUT["JSON Validado<br/>sections_changed · topics_touched<br/>summary_of_the_change"]
-    end
-
-    IMG1 --> GPT1 --> TXT1
-    IMG2 --> GPT2 --> TXT2
-    TXT1 --> AG1
-    TXT2 --> AG1
-    AG1 --> MAPA
-    MAPA --> AG2
-    TXT1 --> AG2
-    TXT2 --> AG2
-    AG2 --> PYD --> JSON_OUT
+ subgraph AGENT1["Agente 1: Contextualizador"]
+        E["ContextualizationAgent - Analista Senior de Estructuras Legales"]
+  end
+ subgraph AGENT2["Agente 2: Extractor"]
+        F["ExtractionAgent — Auditor Legal de Cambios"]
+  end
+ subgraph VALIDATION["Validación Pydantic"]
+        direction LR
+        G["ContractChangeOutput.model_validate()"]
+        V1["sections_changed: List[str]"]
+        V2["topics_touched: List[str]"]
+        V3["summary_of_the_change: str"]
+        G --> V1
+        G --> V2
+        G --> V3
+  end
+ subgraph OUTPUT["Salida"]
+        H(["Output Final"])
+  end
+ subgraph OBS["Observabilidad (Langfuse)"]
+        direction LR
+        TRACE["Trace: contract-analysis"]
+        SP1["parse_original_contract"]
+        SP2["parse_amendment_contract"]
+        SP3["contextualization_agent"]
+        SP4["extraction_agent"]
+        TRACE --> SP1
+        TRACE --> SP2
+        TRACE --> SP3
+        TRACE --> SP4
+  end
+    A --> C
+    B --> D
+    C -- Texto estructurado original --> E
+    D -- Texto estructurado adenda --> E
+    E -- Mapa contextual + textos originales --> F
+    F -- JSON crudo --> G
+    G --> DEC{{"¿Válido?"}}
+    DEC -- Sí --> H
+    DEC -- No --> CRASH(["ValidationError — Excepción"])
+    PARSING -. inputs, outputs, latencia, tokens .-> OBS
+    AGENT1 -. inputs, outputs, latencia, tokens .-> OBS
+    AGENT2 -. inputs, outputs, latencia, tokens .-> OBS
+    VALIDATION -. resultado de validación .-> OBS
 ```
 
 ---
 
 ## Diagrama de secuencia
 
-El siguiente diagrama muestra el flujo de mensajes entre los componentes del sistema durante una ejecución completa. Cada flecha representa una llamada real: desde que el CLI inicia los dos parsings de imagen hasta la contextualización, la extracción estructurada y la validación Pydantic. Los bloques `alt` indican los caminos alternativos ante respuestas inválidas del LLM.
+El siguiente diagrama muestra el flujo de mensajes entre los componentes del sistema durante una ejecución completa. Cada flecha representa una llamada real: desde que el CLI inicia los dos parsings de imagen hasta la contextualización, la extracción estructurada y la validación Pydantic.
 
 ```mermaid
 sequenceDiagram
@@ -114,12 +135,13 @@ sequenceDiagram
     activate PYD
     alt Validación exitosa
         PYD-->>EA: ContractChangeOutput validado
+        EA-->>CLI: ContractChangeOutput
     else ValidationError
         PYD-->>EA: error con detalle de campos
-        EA->>EA: log error + retry o fallback
+        EA->>EA: log error
+        EA-->>CLI: raise ValidationError
     end
     deactivate PYD
-    EA-->>CLI: ContractChangeOutput
     deactivate EA
 
     CLI->>CLI: print(result.model_dump_json(indent=2))
@@ -202,7 +224,7 @@ LANGFUSE_HOST=https://cloud.langfuse.com
 ## Uso
 
 ```bash
-python src/main.py <imagen_original> <imagen_enmienda>
+python src.main.py <imagen_original> <imagen_enmienda>
 ```
 
 **Formatos de imagen soportados:** `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`

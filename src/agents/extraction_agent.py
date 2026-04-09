@@ -157,42 +157,17 @@ Extrae todos los cambios siguiendo el esquema requerido. Sé exhaustivo y precis
 
         except ValidationError as e:
             latency_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"[ExtractionAgent] Validación Pydantic falló: {e}")
-            logger.warning("[ExtractionAgent] Reintentando extracción...")
-            try:
-                raw_output = self.structured_llm.invoke(messages)
-                result = raw_output["parsed"]
-                result = ContractChangeOutput.model_validate(result.model_dump())
-                latency_ms = int((time.time() - start_time) * 1000)
-                usage = (raw_output["raw"].usage_metadata or {}) if raw_output.get("raw") else {}
-                span.end(
-                    output={
-                        "sections_changed": result.sections_changed,
-                        "topics_touched": result.topics_touched,
-                        "summary_preview": result.summary_of_the_change[:300],
-                    },
-                    metadata={
-                        "latency_ms": latency_ms,
-                        "model": "gpt-4o",
-                        "sections_count": len(result.sections_changed),
-                        "topics_count": len(result.topics_touched),
-                        "prompt_tokens": usage.get("input_tokens"),
-                        "completion_tokens": usage.get("output_tokens"),
-                        "validation_status": "valid_after_retry",
-                    },
-                )
-                logger.info("[ExtractionAgent] Reintento exitoso.")
-                return result
-            except Exception as retry_e:
-                logger.error(f"[ExtractionAgent] Reintento también falló: {retry_e}")
-                span.end(
-                    output={"error": str(e), "retry_error": str(retry_e)},
-                    metadata={
-                        "latency_ms": int((time.time() - start_time) * 1000),
-                        "validation_status": "failed",
-                    },
-                )
-                raise
+            logger.error(
+                f"[ExtractionAgent] El output del LLM no cumple el schema ContractChangeOutput: {e}"
+            )
+            span.end(
+                output={"error": str(e)},
+                metadata={
+                    "latency_ms": latency_ms,
+                    "validation_status": "failed",
+                },
+            )
+            raise
 
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)

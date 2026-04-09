@@ -141,10 +141,13 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
         context_map=context_map,
         parent_trace=trace,
     )
-    logger.info(
-        f"      Detectados {len(result.sections_changed)} secciones modificadas, "
-        f"{len(result.topics_touched)} temas afectados."
-    )
+    if not result.sections_changed and not result.topics_touched:
+        logger.info("      El agente no detectó cambios entre los documentos.")
+    else:
+        logger.info(
+            f"      Detectados {len(result.sections_changed)} secciones modificadas, "
+            f"{len(result.topics_touched)} temas afectados."
+        )
 
     # ── End trace ───────────────────────────────────────────────────────
     trace.update(

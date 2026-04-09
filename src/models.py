@@ -24,13 +24,6 @@ class ContractChangeOutput(BaseModel):
         )
     )
 
-    @field_validator("sections_changed", "topics_touched")
-    @classmethod
-    def non_empty_list(cls, v: list[str]) -> list[str]:
-        if not v:
-            raise ValueError("La lista no puede estar vacía — se requiere al menos un elemento.")
-        return v
-
     @field_validator("summary_of_the_change")
     @classmethod
     def summary_min_length(cls, v: str) -> str:
