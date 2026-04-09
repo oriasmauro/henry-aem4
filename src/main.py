@@ -13,6 +13,7 @@ import sys
 import os
 import json
 import logging
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -91,6 +92,7 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
         },
     )
 
+    pipeline_start = time.time()
     original_size_kb = round(Path(original_image_path).stat().st_size / 1024, 1)
     amendment_size_kb = round(Path(amendment_image_path).stat().st_size / 1024, 1)
 
@@ -132,6 +134,7 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
         parent_trace=trace,
     )
     logger.info(f"      OK — Tipo: {context_map.get('document_type', 'N/A')}")
+    logger.info(f"           Fecha: {context_map.get('contract_date', 'N/A')}")
     logger.info(f"           Partes: {', '.join(context_map.get('parties', [])) or 'N/A'}")
     logger.info(f"           Secciones mapeadas: {len(context_map.get('structure_summary', {}))}")
 
@@ -165,7 +168,8 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
         raise
     finally:
         langfuse_client.flush()
-        logger.info(f"Traza Langfuse enviada — https://cloud.langfuse.com/trace/{trace.id}")
+        elapsed = round(time.time() - pipeline_start, 1)
+        logger.info(f"Pipeline completado en {elapsed}s — Traza: https://cloud.langfuse.com/trace/{trace.id}")
 
 
 def _print_result(result: ContractChangeOutput) -> None:
