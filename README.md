@@ -237,7 +237,7 @@ LANGFUSE_HOST=https://cloud.langfuse.com
 ## Uso
 
 ```bash
-python src.main.py <imagen_original> <imagen_enmienda>
+python -m src.main <imagen_original> <imagen_enmienda>
 ```
 
 **Formatos de imagen soportados:** `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`
@@ -248,7 +248,7 @@ python src.main.py <imagen_original> <imagen_enmienda>
 
 **Par 1 — Cambio simple (Contrato de Licencia de Software):**
 ```bash
-python src/main.py \
+python -m src.main \
   data/test_contracts/documento_1__original.jpg \
   data/test_contracts/documento_1__enmienda.jpg
 ```
@@ -256,7 +256,7 @@ Cambios esperados: plazo 12→24 meses, tarifa anual, soporte ampliado, cláusul
 
 **Par 2 — Cambios múltiples (Contrato de Servicios de Consultoría):**
 ```bash
-python src/main.py \
+python -m src.main \
   data/test_contracts/documento_2__original.jpg \
   data/test_contracts/documento_2__enmienda.jpg
 ```
@@ -264,7 +264,7 @@ Cambios esperados: duración 6→9 meses, honorarios $8.000→$9.500, entregable
 
 **Par 3 — Contrato SaaS:**
 ```bash
-python src/main.py \
+python -m src.main \
   data/test_contracts/documento_3__original.jpg \
   data/test_contracts/documento_3__enmienda.jpg
 ```
