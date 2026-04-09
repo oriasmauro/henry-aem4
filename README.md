@@ -323,6 +323,15 @@ Langfuse permite trazar la ejecución completa con jerarquía padre-hijo (trace 
 - Auditar qué texto extrajo el parser y qué vio cada agente
 - Monitorear costos por imagen procesada
 
+### Por qué el parsing de imágenes es secuencial y no paralelo
+Las dos imágenes son independientes entre sí y podrían procesarse en paralelo con `asyncio.gather()`, reduciendo la latencia de esta etapa aproximadamente a la mitad. Se eligió el parsing secuencial por dos razones: primero, paralelizarlo requiere que `parse_contract_image()` sea async, propagando `async/await` a través del pipeline y agregando complejidad sin que el caso de uso exija optimización de latencia; segundo, la trazabilidad en Langfuse de código asíncrono es más compleja — el manejo de spans dentro de coroutines requiere propagación manual del contexto de traza, un punto habitual de errores. Si el volumen justificara la optimización, el refactor a `asyncio` está localizado en `main.py` e `image_parser.py` sin afectar los agentes ni el modelo Pydantic.
+
+### Por qué el Agente 2 recibe los textos completos además del mapa contextual
+El mapa contextual del Agente 1 funciona como guía de lectura — le indica al Agente 2 dónde mirar y cómo relacionar las secciones — pero los textos son la fuente de verdad. Si el Agente 1 omitiera alguna sección o la describiera de forma imprecisa, el Agente 2 puede resolverlo consultando los textos directamente. La compensación es un mayor volumen de tokens por llamada, aceptable dado que la prioridad es la exhaustividad del análisis legal sobre la optimización de costo.
+
+### Por qué se usan dos capas de validación: with_structured_output() y model_validate()
+`with_structured_output()` garantiza que el LLM produzca JSON conforme al schema Pydantic antes de la deserialización. `model_validate()` se ejecuta como verificación explícita adicional sobre el resultado ya parseado, permitiendo capturar y loguear cualquier `ValidationError` con contexto detallado antes de propagar el error. Esta doble validación es la más robusta para un entorno donde los datos malformados tienen consecuencias legales reales.
+
 ---
 
 ## Interacción entre agentes (Handoff Pattern)
@@ -410,7 +419,7 @@ graph TB
 - `text_length`: longitud del texto extraído por el parser
 - `sections_count`: número de cambios detectados por el auditor
 
-### Flujo de instrumentación
+### Flujo
 
 Cada etapa sigue el mismo patrón: se abre un span antes de llamar al LLM, se ejecuta la llamada, y se cierra el span con el output y la metadata resultantes. Al final, `langfuse.flush()` envía todos los eventos acumulados en el buffer local al servidor en un único batch.
 
