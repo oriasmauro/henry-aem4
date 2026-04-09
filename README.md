@@ -144,9 +144,12 @@ sequenceDiagram
     deactivate PYD
     deactivate EA
 
-    CLI->>CLI: print(result.model_dump_json(indent=2))
-
-    Note over CLI,PYD: Pipeline completo ✅ — JSON validado en stdout
+    alt Validación exitosa
+        CLI->>CLI: print(result.model_dump_json(indent=2))
+        Note over CLI,PYD: Pipeline completo ✅ — JSON validado en stdout
+    else ValidationError
+        Note over CLI,PYD: Pipeline abortado ❌ — excepción propagada con mensaje claro
+    end
 ```
 
 
