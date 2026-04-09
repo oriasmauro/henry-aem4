@@ -219,10 +219,10 @@ cp .env.example .env
 Editar `.env` con las claves reales:
 
 ```env
-OPENAI_API_KEY=sk-...          # API key de OpenAI
-LANGFUSE_PUBLIC_KEY=pk-lf-...  # Clave pública de Langfuse
-LANGFUSE_SECRET_KEY=sk-lf-...  # Clave secreta de Langfuse
-LANGFUSE_HOST=https://cloud.langfuse.com
+OPENAI_API_KEY=sk-...          # API key de OpenAI (requerida)
+LANGFUSE_PUBLIC_KEY=pk-lf-...  # Clave pública de Langfuse (requerida)
+LANGFUSE_SECRET_KEY=sk-lf-...  # Clave secreta de Langfuse (requerida)
+LANGFUSE_HOST=https://cloud.langfuse.com  # Opcional — default: https://cloud.langfuse.com
 ```
 
 **Obtener claves Langfuse:**
@@ -296,8 +296,8 @@ Cambios esperados: precio $1.200→$1.250, disponibilidad 99,5%→99,9%, soporte
 
 | Campo | Tipo | Requerido | Restricciones |
 |---|---|---|---|
-| `sections_changed` | `list[str]` | Sí | Al menos 1 elemento. Usa identificadores exactos del documento (ej. `"Cláusula 3"`, `"Sección 2.1"`). |
-| `topics_touched` | `list[str]` | Sí | Al menos 1 elemento. Categorías legales o comerciales afectadas. |
+| `sections_changed` | `list[str]` | Sí | Lista vacía si no hay cambios. Usa identificadores exactos del documento (ej. `"Cláusula 3"`, `"Sección 2.1"`). |
+| `topics_touched` | `list[str]` | Sí | Lista vacía si no hay cambios. Categorías legales o comerciales afectadas. |
 | `summary_of_the_change` | `str` | Sí | Mínimo 50 caracteres. Debe referenciar secciones específicas e indicar valor anterior y nuevo. |
 
 ---

@@ -2,10 +2,10 @@
 main.py — LegalMove: Pipeline autónomo de comparación de contratos.
 
 Uso:
-    python src/main.py <ruta_imagen_original> <ruta_imagen_enmienda>
+    python -m src.main <ruta_imagen_original> <ruta_imagen_enmienda>
 
 Ejemplo:
-    python src/main.py data/test_contracts/documento_1__original.jpg \\
+    python -m src.main data/test_contracts/documento_1__original.jpg \\
                        data/test_contracts/documento_1__enmienda.jpg
 """
 
