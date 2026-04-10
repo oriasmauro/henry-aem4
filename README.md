@@ -69,7 +69,7 @@ sequenceDiagram
     participant M as main.py
     participant L as Langfuse
     participant P as image_parser.py
-    participant O as GPT-4o Vision
+    participant O as GPT-4o Multimodal
     participant C as ContextualizationAgent
     participant E as ExtractionAgent
     participant V as Pydantic
