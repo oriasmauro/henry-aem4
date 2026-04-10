@@ -28,6 +28,13 @@ class ContextMap(BaseModel):
             "Ejemplo: {'Cláusula 1': 'presente en ambos'}."
         )
     )
+    is_degraded: bool = Field(
+        default=False,
+        description=(
+            "Indica si el mapa contextual fue aceptado con informacion parcial "
+            "y no cumple el nivel ideal de completitud."
+        )
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -42,6 +49,9 @@ class ContextMap(BaseModel):
                     break
             else:
                 data["structure_summary"] = {}
+
+        if not data.get("structure_summary"):
+            data["is_degraded"] = True
 
         return data
 

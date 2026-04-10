@@ -164,6 +164,7 @@ Extrae todos los cambios siguiendo el esquema requerido. Sé exhaustivo y precis
                     "completion_tokens": usage.get("output_tokens"),
                     "total_tokens": usage.get("total_tokens"),
                     "validation_status": "valid",
+                    "context_map_degraded": context_map.get("is_degraded", False),
                 },
             )
 

@@ -107,7 +107,7 @@ sequenceDiagram
     M-->>U: JSON final
 ```
 
-El handoff entre agentes sigue una separación estricta de responsabilidades. `ContextualizationAgent` no decide qué cambió: solo construye un mapa estructural confiable del contrato y la enmienda. `ExtractionAgent` usa ese mapa como guía, pero compara sobre los textos completos para identificar cambios concretos y devolver un resultado validado. Esa división reduce alucinaciones y hace más defendible el diseño en la presentación.
+El handoff entre agentes sigue una separación estricta de responsabilidades. `ContextualizationAgent` no decide qué cambió: solo construye un mapa estructural confiable del contrato y la enmienda. `ExtractionAgent` usa ese mapa como guía, pero compara sobre los textos completos para identificar cambios concretos y devolver un resultado validado. Esa división reduce alucinaciones.
 
 ## Estructura del repositorio
 
@@ -224,6 +224,8 @@ Los agentes pueden devolver salidas parciales o con formatos distintos segun la 
 
 En particular, se usan dos capas de validacion sobre la salida estructurada. `with_structured_output()` orienta al modelo a responder con el schema esperado, mientras que `model_validate()` vuelve a validar el resultado del lado de la aplicacion. Esta verificacion adicional permite detectar campos faltantes, tipos incorrectos o respuestas parcialmente parseadas antes de continuar el flujo.
 
+Cuando el mapa contextual llega incompleto, el pipeline puede marcarlo como degradado para explicitar que el handoff entre agentes no alcanzo el nivel ideal de completitud, en lugar de tratarlo como una salida totalmente confiable.
+
 ### Por que el parsing de imagenes es secuencial y no paralelo
 
 Las dos imagenes podrian procesarse en paralelo porque son independientes, pero hoy el pipeline prioriza simplicidad operativa y trazabilidad clara. Ejecutarlas de forma secuencial mantiene el flujo mas facil de seguir en logs y en Langfuse, reduce complejidad de coordinacion y evita introducir concurrencia antes de que sea realmente necesaria. Si el volumen o la latencia lo justificaran, esta etapa es una candidata natural para paralelizacion futura, por ejemplo usando `asyncio` para lanzar ambos parsings de manera concurrente.
@@ -265,6 +267,7 @@ Detalle por span:
 - `sections_count`
 - `topics_count`
 - `validation_status`
+- `context_map_degraded`
 
 ### Flujo de instrumentacion
 
@@ -281,9 +284,10 @@ La instrumentacion actual es manual usando `trace.span(...)` y `span.end(...)`. 
 | Formatos soportados | `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`. No se aceptan PDFs directamente. |
 | Idioma | El sistema esta optimizado para contratos en español. Puede funcionar en otros idiomas, pero los prompts y validadores estan orientados al dominio legal hispanohablante. |
 | Longitud maxima del texto | `ExtractionAgent` recibe ambos textos junto con el `context_map`. En documentos muy extensos, la suma de tokens puede acercarse al limite del modelo. |
+| Truncamiento del parser | El parsing multimodal usa un limite de salida del modelo. Si la respuesta se corta por longitud, el pipeline lo detecta como truncamiento y falla o reintenta, en lugar de aceptar un texto incompleto como valido. |
 | Texto ilegible | Si el parser detecta texto ilegible, lo marca como `[ILEGIBLE]`. El agente de extraccion intentara analizar el resto, pero puede omitir cambios en esas zonas. |
 | Dependencia de calidad de escaneo | Imagenes con baja resolucion, sombras, recortes o rotacion pueden degradar el parsing y afectar la extraccion posterior. |
-| Cobertura de tests | El proyecto tiene tests unitarios y coverage basico, pero no cuenta todavia con pruebas end-to-end ni mocks de OpenAI y Langfuse. |
+| Cobertura de tests | El proyecto tiene tests unitarios y coverage basico sobre modelos y parser, pero no cuenta todavia con pruebas end-to-end ni mocks completos de OpenAI, LangChain y Langfuse. |
 
 ## Propuesta de escalado
 
@@ -416,7 +420,9 @@ Con esa informacion, se podria:
 
 ## Tests
 
-La suite actual esta basada en `unittest` y cubre validaciones de los modelos Pydantic. Ademas, el proyecto incluye `coverage` para medir la cobertura sobre el codigo de `src/` usando la configuracion de [`.coveragerc`](/Users/mauroorias/Documents/henry/aem4/.coveragerc).
+La suite actual esta basada en `unittest` y cubre validaciones de los modelos Pydantic, la normalizacion del `ContextMap` y la deteccion de truncamiento en el parser. Ademas, el proyecto incluye `coverage` para medir la cobertura sobre el codigo de `src/` usando la configuracion de [`.coveragerc`](/Users/mauroorias/Documents/henry/aem4/.coveragerc).
+
+Los siguientes comandos deben ejecutarse con el entorno virtual activado para asegurar que las dependencias del proyecto esten disponibles.
 
 Ejecutar tests:
 

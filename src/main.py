@@ -33,9 +33,6 @@ def _validate_env() -> None:
             "Copia .env.example a .env y completa los valores."
         )
 
-
-_validate_env()
-
 from langfuse import Langfuse
 from openai import OpenAI
 
@@ -53,6 +50,7 @@ logger = logging.getLogger("legalmove")
 
 def run_pipeline(original_image_path: str, amendment_image_path: str) -> ContractChangeOutput:
     """Ejecuta el pipeline completo y devuelve un output validado por Pydantic."""
+    _validate_env()
     openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     langfuse_client = Langfuse(
         public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),

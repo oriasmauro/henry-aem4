@@ -120,8 +120,14 @@ def parse_contract_image(
             )
 
             extracted_text = response.choices[0].message.content
+            finish_reason = response.choices[0].finish_reason
             latency_ms = int((time.time() - start_time) * 1000)
             usage = response.usage
+
+            if finish_reason == "length":
+                raise RuntimeError(
+                    f"[{span_name}] La respuesta del modelo fue truncada por limite de tokens."
+                )
 
             span.end(
                 output={
@@ -137,6 +143,7 @@ def parse_contract_image(
                     "total_tokens": usage.total_tokens if usage else None,
                     "attempt": attempt + 1,
                     "image_media_type": media_type,
+                    "finish_reason": finish_reason,
                 },
             )
 
@@ -152,6 +159,12 @@ def parse_contract_image(
             )
             if attempt < max_retries - 1:
                 time.sleep(delay)
+
+        except RuntimeError as e:
+            last_error = e
+            logger.error(f"[{span_name}] Respuesta invalida del modelo: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(1.0)
 
         except (FileNotFoundError, ValueError) as e:
             span.end(

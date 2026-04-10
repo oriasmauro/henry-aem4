@@ -117,12 +117,14 @@ Construye el mapa contextual en formato JSON."""
                     "prompt_tokens": usage.get("input_tokens") if usage else None,
                     "completion_tokens": usage.get("output_tokens") if usage else None,
                     "validation_status": "valid",
+                    "is_degraded": context_map.get("is_degraded", False),
                 },
             )
 
-            if not context_map.get("structure_summary"):
+            if context_map.get("is_degraded"):
                 logger.warning(
-                    "[ContextualizationAgent] El modelo no devolvio structure_summary; se usara un mapa vacio"
+                    "[ContextualizationAgent] El modelo no devolvio un structure_summary confiable; "
+                    "el contexto se marcara como degradado"
                 )
 
             logger.info(

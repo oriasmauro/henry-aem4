@@ -1,8 +1,34 @@
 import unittest
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
+from src.image_parser import parse_contract_image
 from src.models import ContextMap, ContractChangeOutput
+
+
+class DummySpan:
+    def __init__(self):
+        self.ended = False
+        self.output = None
+        self.metadata = None
+
+    def end(self, output=None, metadata=None):
+        self.ended = True
+        self.output = output
+        self.metadata = metadata
+
+
+class DummyTrace:
+    def __init__(self):
+        self.last_span = None
+
+    def span(self, name, input):
+        self.last_span = DummySpan()
+        return self.last_span
 
 
 class ContractModelsTestCase(unittest.TestCase):
@@ -43,6 +69,61 @@ class ContractModelsTestCase(unittest.TestCase):
                     "unexpected": True,
                 }
             )
+
+    def test_context_map_marks_degraded_when_structure_summary_missing(self) -> None:
+        result = ContextMap.model_validate(
+            {
+                "document_type": "Contrato de Servicios",
+                "parties": ["LegalMove", "Cliente"],
+                "contract_date": "2026-01-01",
+                "general_purpose": "Regular la prestación de servicios.",
+            }
+        )
+
+        self.assertEqual(result.structure_summary, {})
+        self.assertTrue(result.is_degraded)
+
+
+class ImageParserTestCase(unittest.TestCase):
+    def test_parse_contract_image_detects_truncation(self) -> None:
+        with NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp.write(b"fake-image-content")
+            image_path = tmp.name
+
+        trace = DummyTrace()
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="texto truncado"),
+                    finish_reason="length",
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=10, total_tokens=20),
+        )
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=lambda **kwargs: response
+                )
+            )
+        )
+
+        try:
+            with patch("src.image_parser.time.sleep", return_value=None):
+                with self.assertRaises(RuntimeError):
+                    parse_contract_image(
+                        image_path=image_path,
+                        openai_client=client,
+                        langfuse_client=None,
+                        parent_trace=trace,
+                        span_name="parse_original_contract",
+                        max_retries=1,
+                    )
+        finally:
+            Path(image_path).unlink(missing_ok=True)
+
+        self.assertTrue(trace.last_span.ended)
+        self.assertIn("truncada", trace.last_span.output["error"])
 
 
 if __name__ == "__main__":
