@@ -41,6 +41,8 @@ def _encode_image(image_path: str) -> tuple[str, str]:
         raise FileNotFoundError(f"Imagen no encontrada: {image_path}")
     if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
         raise ValueError(f"Formato de imagen no soportado: {path.suffix}")
+    if path.stat().st_size == 0:
+        raise ValueError(f"La imagen está vacía: {image_path}")
 
     mime_map = {
         ".jpg": "image/jpeg",
@@ -78,7 +80,10 @@ def parse_contract_image(
     """
     span = parent_trace.span(
         name=span_name,
-        input={"image_path": image_path},
+        input={
+            "image_path": image_path,
+            "file_size_bytes": Path(image_path).stat().st_size if Path(image_path).exists() else None,
+        },
     )
 
     start_time = time.time()
@@ -120,6 +125,7 @@ def parse_contract_image(
 
             span.end(
                 output={
+                    "full_text": extracted_text,
                     "text_length": len(extracted_text),
                     "text_preview": extracted_text[:200],
                 },
@@ -130,6 +136,7 @@ def parse_contract_image(
                     "completion_tokens": usage.completion_tokens if usage else None,
                     "total_tokens": usage.total_tokens if usage else None,
                     "attempt": attempt + 1,
+                    "image_media_type": media_type,
                 },
             )
 
@@ -146,10 +153,13 @@ def parse_contract_image(
             if attempt < max_retries - 1:
                 time.sleep(delay)
 
-        except FileNotFoundError as e:
+        except (FileNotFoundError, ValueError) as e:
             span.end(
                 output={"error": str(e)},
-                metadata={"latency_ms": int((time.time() - start_time) * 1000)},
+                metadata={
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "validation_status": "failed",
+                },
             )
             raise
 
@@ -157,14 +167,20 @@ def parse_contract_image(
             logger.error(f"[{span_name}] Error inesperado: {e}")
             span.end(
                 output={"error": str(e)},
-                metadata={"latency_ms": int((time.time() - start_time) * 1000)},
+                metadata={
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "validation_status": "failed",
+                },
             )
             raise
 
     # Si agotamos los reintentos, registramos el error final y lanzamos excepción
     span.end(
         output={"error": str(last_error)},
-        metadata={"latency_ms": int((time.time() - start_time) * 1000)},
+        metadata={
+            "latency_ms": int((time.time() - start_time) * 1000),
+            "validation_status": "failed",
+        },
     )
     raise RuntimeError(
         f"[{span_name}] Falló después de {max_retries} intentos: {last_error}"

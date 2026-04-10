@@ -1,294 +1,186 @@
-# LegalMove — Agente Autónomo de Comparación de Contratos
+# LegalMove - Agente Autonomo de Comparacion de Contratos
 
-Sistema multi-agente que procesa imágenes escaneadas de contratos legales y sus enmiendas, extrae el texto mediante visión multimodal (GPT-4o) y produce un análisis estructurado y validado de todos los cambios introducidos.
+Pipeline en Python que compara la imagen de un contrato original contra la imagen de su enmienda. El sistema usa GPT-4o Vision para extraer el texto, un agente para contextualizar la estructura del documento, otro para identificar los cambios y Pydantic para validar la salida final.
 
----
+## Indice
 
-## Arquitectura del sistema
+- [Objetivo](#objetivo)
+- [Arquitectura](#arquitectura)
+- [Diagrama de secuencia](#diagrama-de-secuencia)
+- [Estructura del repositorio](#estructura-del-repositorio)
+- [Requisitos](#requisitos)
+- [Instalacion](#instalacion)
+- [Uso](#uso)
+- [Salida esperada](#salida-esperada)
+- [Decisiones tecnicas](#decisiones-tecnicas)
+- [Observabilidad con Langfuse](#observabilidad-con-langfuse)
+- [Limitaciones actuales](#limitaciones-actuales)
+- [Propuesta de escalado](#propuesta-de-escalado)
+- [Tests](#tests)
 
-El sistema opera en cuatro pasos secuenciales: las imágenes de entrada se convierten a texto mediante visión multimodal (GPT-4o), luego dos agentes LLM especializados procesan ese texto en pipeline — el primero construye un mapa contextual del documento y el segundo extrae los cambios usando ese mapa como referencia —, y el resultado se valida con Pydantic.
+## Objetivo
+
+El objetivo del proyecto es automatizar la comparacion entre un contrato original y su enmienda a partir de imagenes escaneadas:
+
+- `parse_contract_image()` usa GPT-4o Vision sobre imagenes en base64.
+- `ContextualizationAgent` construye un mapa estructural del documento.
+- `ExtractionAgent` usa ese mapa para extraer cambios contractuales.
+- `ContractChangeOutput` valida la salida final.
+- Langfuse registra una traza raiz y spans hijos por etapa.
+
+## Arquitectura
+
+Este diagrama resume la arquitectura lógica del sistema: dos entradas visuales pasan por el parser multimodal, luego por dos agentes con responsabilidades separadas y finalmente por una validación estricta antes de producir el JSON final.
 
 ```mermaid
-flowchart TB
- subgraph Entrada["Entrada"]
-        A(["Imagen: Contrato Original"])
-        B(["Imagen: Adenda"])
-  end
- subgraph PARSING["Parsing Multimodal"]
-        C["GPT-4o Vision + base64"]
-        D["GPT-4o Vision + base64"]
-  end
+flowchart LR
+    A[Imagen contrato original] --> B[parse_contract_image]
+    C[Imagen enmienda] --> D[parse_contract_image]
+    B --> E[ContextualizationAgent]
+    D --> E
+    E --> F[ExtractionAgent]
+    F --> G[Pydantic ContractChangeOutput]
+    G --> H[JSON final]
 
- subgraph AGENT1["Agente 1: Contextualizador"]
-        E["ContextualizationAgent - Analista Senior de Estructuras Legales"]
-  end
- subgraph AGENT2["Agente 2: Extractor"]
-        F["ExtractionAgent — Auditor Legal de Cambios"]
-  end
- subgraph VALIDATION["Validación Pydantic"]
-        direction LR
-        G["ContractChangeOutput.model_validate()"]
-        V1["sections_changed: List[str]"]
-        V2["topics_touched: List[str]"]
-        V3["summary_of_the_change: str"]
-        G --> V1
-        G --> V2
-        G --> V3
-  end
- subgraph OUTPUT["Salida"]
-        H(["Output Final"])
-  end
- subgraph OBS["Observabilidad (Langfuse)"]
-        direction LR
-        TRACE["Trace: contract-analysis"]
-        SP1["parse_original_contract"]
-        SP2["parse_amendment_contract"]
-        SP3["contextualization_agent"]
-        SP4["extraction_agent"]
-        TRACE --> SP1
-        TRACE --> SP2
-        TRACE --> SP3
-        TRACE --> SP4
-  end
-    A --> C
-    B --> D
-    C -- Texto estructurado original --> E
-    D -- Texto estructurado adenda --> E
-    E -- Mapa contextual + textos originales --> F
-    F -- JSON crudo --> G
-    G --> DEC{{"¿Válido?"}}
-    DEC -- Sí --> H
-    DEC -- No --> CRASH(["ValidationError — Excepción"])
-    PARSING -. inputs, outputs, latencia, tokens .-> OBS
-    AGENT1 -. inputs, outputs, latencia, tokens .-> OBS
-    AGENT2 -. inputs, outputs, latencia, tokens .-> OBS
-    VALIDATION -. resultado de validación .-> OBS
+    L[Langfuse Observability]
+    B -. spans .-> L
+    D -. spans .-> L
+    E -. spans .-> L
+    F -. spans .-> L
 ```
 
----
+Resumen de entradas y salidas por componente:
+
+| Componente | Entrada | Salida |
+|---|---|---|
+| `parse_contract_image` | Imagen contractual | Texto extraido |
+| `ContextualizationAgent` | Texto original + texto de enmienda | `context_map` |
+| `ExtractionAgent` | Texto original + texto de enmienda + `context_map` | `ContractChangeOutput` |
+| `Pydantic ContractChangeOutput` | JSON estructurado del extractor | Output validado |
+| `Langfuse` | Eventos del pipeline | Trazas, spans y metricas |
 
 ## Diagrama de secuencia
 
-El siguiente diagrama muestra el flujo de mensajes entre los componentes del sistema durante una ejecución completa. Cada flecha representa una llamada real: desde que el CLI inicia los dos parsings de imagen hasta la contextualización, la extracción estructurada y la validación Pydantic.
+Este diagrama muestra el orden real de ejecución del pipeline, incluyendo la creación de la traza en Langfuse, las llamadas a GPT-4o y la validación final con Pydantic.
 
 ```mermaid
 sequenceDiagram
-    actor Usuario as 👤 Usuario
-    participant Main as 🚀 main.py
-    participant Langfuse as 📊 Langfuse
-    participant Parser as 📡 image_parser.py
-    participant GPT4o as 🤖 GPT-4o Vision API
-    participant Agent1 as 🧠 ContextualizationAgent
-    participant Agent2 as 🔍 ExtractionAgent
-    participant Pydantic as ✅ Pydantic
+    actor U as Usuario
+    participant M as main.py
+    participant L as Langfuse
+    participant P as image_parser.py
+    participant O as GPT-4o Vision
+    participant C as ContextualizationAgent
+    participant E as ExtractionAgent
+    participant V as Pydantic
 
-    Usuario->>Main: python main.py contrato.png adenda.png
+    U->>M: Ejecuta CLI con original + enmienda
+    M->>L: Crea trace contract-analysis
 
-    Main->>Langfuse: trace("contract-analysis")
+    M->>P: parse_contract_image(original)
+    P->>L: span parse_original_contract
+    P->>O: Envia imagen base64
+    O-->>P: Texto extraido
+    P-->>M: original_text
 
-    Note over Main,GPT4o: ── Etapa 1: Parsing Multimodal ──
-    Note over Parser,GPT4o: Hasta 3 reintentos con backoff exponencial ante RateLimitError o APITimeoutError
+    M->>P: parse_contract_image(enmienda)
+    P->>L: span parse_amendment_contract
+    P->>O: Envia imagen base64
+    O-->>P: Texto extraido
+    P-->>M: amendment_text
 
-    Main->>Parser: parse_contract_image(path_original, parent_trace)
-    activate Parser
-    Parser->>Langfuse: span("parse_original_contract")
-    Parser->>Parser: Validar archivo (tipo, tamaño)
-    Parser->>Parser: Codificar imagen en base64
-    Parser->>GPT4o: POST /chat/completions (imagen base64 + prompt)
-    GPT4o-->>Parser: Texto extraído con jerarquía de secciones
-    Parser->>Langfuse: span.end(output=texto, tokens, latencia)
-    Parser-->>Main: contract_text (str)
-    deactivate Parser
+    M->>C: run(original_text, amendment_text)
+    C->>L: span contextualization_agent
+    C->>O: Solicita ContextMap estructurado
+    O-->>C: ContextMap
+    C-->>M: context_map
 
-    Main->>Parser: parse_contract_image(path_adenda, parent_trace)
-    activate Parser
-    Parser->>Langfuse: span("parse_amendment_contract")
-    Parser->>Parser: Validar archivo (tipo, tamaño)
-    Parser->>Parser: Codificar imagen en base64
-    Parser->>GPT4o: POST /chat/completions (imagen base64 + prompt)
-    GPT4o-->>Parser: Texto extraído con jerarquía de secciones
-    Parser->>Langfuse: span.end(output=texto, tokens, latencia)
-    Parser-->>Main: amendment_text (str)
-    deactivate Parser
+    M->>E: run(original_text, amendment_text, context_map)
+    E->>L: span extraction_agent
+    E->>O: Solicita ContractChangeOutput estructurado
+    O-->>E: Output estructurado
+    E->>V: model_validate()
+    V-->>E: Output validado
+    E-->>M: ContractChangeOutput
 
-    Note over Main,Agent1: ── Etapa 2: Agente 1 — Contextualización ──
-
-    Main->>Agent1: run(contract_text, amendment_text, parent_trace)
-    activate Agent1
-    Agent1->>Langfuse: span("contextualization_agent")
-    Agent1->>Agent1: Construir prompt con ambos textos
-    Agent1->>GPT4o: POST /chat/completions (system prompt + textos)
-    GPT4o-->>Agent1: Mapa contextual (JSON)
-    Agent1->>Agent1: json.loads() → context_map
-    alt JSON válido
-        Agent1->>Langfuse: span.end(output=mapa, tokens, latencia)
-        Agent1-->>Main: context_map (dict)
-    else JSONDecodeError
-        Agent1->>Agent1: fallback → contexto mínimo
-        Agent1->>Langfuse: span.end(fallback=true)
-        Agent1-->>Main: context_map (dict parcial)
-    end
-    deactivate Agent1
-
-    Note over Main,Agent2: ── Etapa 3: Agente 2 — Extracción de cambios ──
-
-    Main->>Agent2: run(contract_text, amendment_text, context_map, parent_trace)
-    activate Agent2
-    Agent2->>Langfuse: span("extraction_agent")
-    Agent2->>Agent2: Construir prompt con mapa + textos completos
-    Agent2->>GPT4o: POST /chat/completions (system prompt + contexto + textos)
-    Note right of GPT4o: with_structured_output(ContractChangeOutput)
-    GPT4o-->>Agent2: JSON estructurado (structured output)
-
-    Note over Agent2,Pydantic: ── Etapa 4: Validación Pydantic ──
-
-    Agent2->>Pydantic: model_validate(raw_output)
-    activate Pydantic
-    alt Validación Pydantic
-        Pydantic-->>Agent2: ContractChangeOutput validado
-        Agent2->>Langfuse: span.end(output=JSON, tokens, latencia, status=valid)
-        Agent2-->>Main: ContractChangeOutput
-        Main->>Langfuse: trace.update() + flush()
-        Main-->>Usuario: ✅ JSON validado impreso en consola
-    else ValidationError
-        Pydantic-->>Agent2: ValidationError con campos inválidos
-        Agent2->>Agent2: log error con mensaje claro
-        Agent2->>Langfuse: span.end(status=failed)
-        Agent2-->>Main: raise ValidationError
-        Main->>Langfuse: trace.update(error) + flush()
-        Main-->>Usuario: ❌ Error detallado con campos que fallaron
-    end
-    deactivate Pydantic
-    deactivate Agent2
+    M->>L: Actualiza trace y flush
+    M-->>U: JSON final
 ```
 
+El handoff entre agentes sigue una separación estricta de responsabilidades. `ContextualizationAgent` no decide qué cambió: solo construye un mapa estructural confiable del contrato y la enmienda. `ExtractionAgent` usa ese mapa como guía, pero compara sobre los textos completos para identificar cambios concretos y devolver un resultado validado. Esa división reduce alucinaciones y hace más defendible el diseño en la presentación.
 
-## Estructura del proyecto
+## Estructura del repositorio
 
-```
+```text
 aem4/
+├── .coveragerc
+├── .env.example
+├── README.md
+├── requirements.txt
 ├── src/
-│   ├── main.py                          # Entry point del pipeline
-│   ├── image_parser.py                  # Parsing multimodal GPT-4o Vision
-│   ├── models.py                        # Schema Pydantic ContractChangeOutput
+│   ├── main.py
+│   ├── image_parser.py
+│   ├── models.py
 │   └── agents/
 │       ├── __init__.py
-│       ├── contextualization_agent.py   # Agente 1: contexto
-│       └── extraction_agent.py          # Agente 2: extracción de cambios
-├── data/
-│   └── test_contracts/                  # 3 pares de imágenes de prueba
-├── .env.example                         # Template de variables de entorno
-├── requirements.txt
-└── README.md
+│       ├── contextualization_agent.py
+│       └── extraction_agent.py
+├── data/test_contracts/
+├── tests/
+│   └── test_models.py
+└── .gitignore
 ```
 
----
+## Requisitos
 
-## Prerrequisitos
+- Python 3.10 o superior
+- Una cuenta con claves de OpenAI y Langfuse
 
-| Requisito | Versión mínima | Notas |
-|---|---|---|
-| Python | 3.10+ | Requerido por la sintaxis de type hints (`list[str]`) |
-| pip | Cualquiera | Incluido con Python |
-| Entorno virtual | — | Recomendado (`venv` o `conda`) |
-
-No se requieren dependencias del sistema operativo. El parser de imágenes usa `base64` (built-in) y no depende de librerías nativas.
+## Instalacion
 
 ```bash
-# Crear y activar entorno virtual (recomendado)
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-```
-
----
-
-## Setup
-
-### 1. Instalar dependencias
-
-```bash
+source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-### 2. Configurar variables de entorno
-
-```bash
 cp .env.example .env
 ```
 
-Editar `.env` con las claves reales:
+`.env.example`:
 
 ```env
-OPENAI_API_KEY=sk-...          # API key de OpenAI (requerida)
-LANGFUSE_PUBLIC_KEY=pk-lf-...  # Clave pública de Langfuse (requerida)
-LANGFUSE_SECRET_KEY=sk-lf-...  # Clave secreta de Langfuse (requerida)
-LANGFUSE_HOST=https://cloud.langfuse.com  # Opcional — default: https://cloud.langfuse.com
+OPENAI_API_KEY=your-key-here
+LANGFUSE_PUBLIC_KEY=pk-lf-xxx
+LANGFUSE_SECRET_KEY=sk-lf-xxx
+LANGFUSE_HOST=https://cloud.langfuse.com
 ```
-
-**Obtener claves Langfuse:**
-1. Crear cuenta en https://cloud.langfuse.com
-2. Crear un nuevo proyecto
-3. En Settings → API Keys, copiar public key y secret key
-
-> **Costo estimado por ejecución:** ~$0.05–$0.10 USD con GPT-4o (imágenes en `detail=high`). Ver la sección [Fundamentos del mecanismo de tokenización](#fundamentos-del-mecanismo-de-tokenización) para el desglose por etapa.
-
----
 
 ## Uso
 
+Salida JSON estructurada por defecto:
+
 ```bash
-python -m src.main <imagen_original> <imagen_enmienda>
+python -m src.main data/test_contracts/documento_1__original.jpg data/test_contracts/documento_1__enmienda.jpg
 ```
 
-**Formatos de imagen soportados:** `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`
+Salida legible para humanos:
 
-> Cada imagen debe contener una sola página del contrato. El sistema no soporta PDFs ni documentos multipágina de forma nativa.
-
-### Ejemplos con los contratos de prueba
-
-**Par 1 — Cambio simple (Contrato de Licencia de Software):**
 ```bash
-python -m src.main \
-  data/test_contracts/documento_1__original.jpg \
-  data/test_contracts/documento_1__enmienda.jpg
+python -m src.main data/test_contracts/documento_1__original.jpg data/test_contracts/documento_1__enmienda.jpg --pretty
 ```
-Cambios esperados: plazo 12→24 meses, tarifa anual, soporte ampliado, cláusula de protección de datos nueva.
 
-**Par 2 — Cambios múltiples (Contrato de Servicios de Consultoría):**
-```bash
-python -m src.main \
-  data/test_contracts/documento_2__original.jpg \
-  data/test_contracts/documento_2__enmienda.jpg
-```
-Cambios esperados: duración 6→9 meses, honorarios $8.000→$9.500, entregables quincenales, propiedad intelectual nueva.
-
-**Par 3 — Contrato SaaS:**
-```bash
-python -m src.main \
-  data/test_contracts/documento_3__original.jpg \
-  data/test_contracts/documento_3__enmienda.jpg
-```
-Cambios esperados: precio $1.200→$1.250, disponibilidad 99,5%→99,9%, soporte ampliado con sistema de tickets.
-
----
-
-## Salida del sistema
+## Salida esperada
 
 ```json
 {
   "sections_changed": [
-    "Cláusula 2 — Plazo",
-    "Cláusula 3 — Pago",
-    "Cláusula 4 — Soporte",
-    "Cláusula 7 — Protección de Datos"
+    "Cláusula 2",
+    "Cláusula 7"
   ],
   "topics_touched": [
-    "Plazo del contrato",
-    "Honorarios y tarifas",
-    "Soporte técnico",
-    "Protección de datos personales"
+    "Plazo",
+    "Protección de datos"
   ],
-  "summary_of_the_change": "La enmienda introduce cuatro modificaciones sobre el contrato original..."
+  "summary_of_the_change": "La Cláusula 2 modifica el plazo contractual de 12 a 24 meses y la Cláusula 7 incorpora obligaciones específicas de protección de datos."
 }
 ```
 
@@ -296,671 +188,253 @@ Cambios esperados: precio $1.200→$1.250, disponibilidad 99,5%→99,9%, soporte
 
 | Campo | Tipo | Requerido | Restricciones |
 |---|---|---|---|
-| `sections_changed` | `list[str]` | Sí | Lista vacía si no hay cambios. Usa identificadores exactos del documento (ej. `"Cláusula 3"`, `"Sección 2.1"`). |
-| `topics_touched` | `list[str]` | Sí | Lista vacía si no hay cambios. Categorías legales o comerciales afectadas. |
-| `summary_of_the_change` | `str` | Sí | Mínimo 50 caracteres. Debe referenciar secciones específicas e indicar valor anterior y nuevo. |
+| `sections_changed` | `list[str]` | Si | Lista vacia si no hay cambios. Usa identificadores exactos del documento, por ejemplo `"Cláusula 3"` o `"Sección 2.1"`. |
+| `topics_touched` | `list[str]` | Si | Lista vacia si no hay cambios. Representa categorias legales o comerciales afectadas. |
+| `summary_of_the_change` | `str` | Si | Minimo 50 caracteres. Debe referenciar secciones especificas e indicar el cambio detectado. |
 
----
+## Decisiones tecnicas
 
-## Decisiones técnicas
+### Por que GPT-4o Vision para el parsing
 
-### Por qué GPT-4o Vision
-GPT-4o es el único modelo de OpenAI con soporte de visión de alta fidelidad para documentos densos en texto. Con `detail: "high"`, preserva numeración de cláusulas, términos definidos y estructura jerárquica — elementos críticos para el análisis legal. Se usa base64 en lugar de URLs para portabilidad y funcionamiento offline.
+El sistema trabaja sobre imagenes escaneadas de documentos contractuales. En este contexto no alcanza con extraer texto plano: tambien importa preservar numeracion, jerarquia de clausulas, terminos definidos y referencias cruzadas. Por eso se usa un modelo multimodal en lugar de un OCR basico. Ademas, el parsing se realiza con `detail: "high"` para mejorar la fidelidad sobre documentos densos en texto y con estructura jerarquica.
 
-### Por qué 2 agentes separados
-Un solo agente que contextualice y extraiga cambios al mismo tiempo degrada la calidad de ambas tareas. La separación de responsabilidades permite:
-- **Agente 1 (Analista)**: enfocarse en entender qué ES el documento, sin comparar.
-- **Agente 2 (Auditor)**: recibir un mapa ya construido y enfocarse exclusivamente en QUÉ cambió.
+### Por que separar el analisis en dos agentes
+
+Se dividio el flujo en dos responsabilidades. `ContextualizationAgent` se enfoca en entender el tipo de documento, sus partes y su estructura. `ExtractionAgent` usa ese contexto para identificar cambios concretos. Esta separacion reduce mezcla de tareas, mejora el handoff entre etapas y hace mas facil depurar resultados.
+
+La separación de responsabilidades permite:
+
+- Agente 1 (Analista): enfocarse en entender qué ES el documento, sin comparar.
+- Agente 2 (Auditor): recibir un mapa ya construido y enfocarse exclusivamente en QUÉ cambió.
 
 Este patrón reduce alucinaciones y mejora la exhaustividad de la extracción.
 
-### Por qué Pydantic con with_structured_output()
-`with_structured_output()` de LangChain pasa el schema Pydantic como definición de función al LLM, forzando una respuesta JSON conforme al schema antes de la deserialización. La validación explícita adicional con `model_validate()` agrega una segunda capa de seguridad. Los `field_validator` personalizan los mensajes de error para el dominio legal.
+### Por que validar la salida con Pydantic
 
-### Por qué Langfuse
-Langfuse permite trazar la ejecución completa con jerarquía padre-hijo (trace → spans), capturando inputs, outputs, latencias y tokens por etapa. Esto es esencial en producción para:
-- Debuggear qué etapa falló en una ejecución específica
-- Auditar qué texto extrajo el parser y qué vio cada agente
-- Monitorear costos por imagen procesada
+El output final no esta pensado solo para lectura humana. Debe ser consumible por otros sistemas, por lo que necesita un schema estable. Pydantic se usa para asegurar que la salida tenga forma conocida, tipos consistentes y fallos explicitos cuando el modelo devuelve algo incompleto o invalido.
 
-### Por qué el parsing de imágenes es secuencial y no paralelo
-Las dos imágenes son independientes entre sí y podrían procesarse en paralelo con `asyncio.gather()`, reduciendo la latencia de esta etapa aproximadamente a la mitad. Se eligió el parsing secuencial por dos razones: primero, paralelizarlo requiere que `parse_contract_image()` sea async, propagando `async/await` a través del pipeline y agregando complejidad sin que el caso de uso exija optimización de latencia; segundo, la trazabilidad en Langfuse de código asíncrono es más compleja — el manejo de spans requiere propagación manual del contexto de traza. Si el volumen justificara la optimización, el refactor a `asyncio` está localizado en `main.py` e `image_parser.py` sin afectar los agentes ni el modelo Pydantic.
+### Por que usar Langfuse para observabilidad
 
-### Por qué el Agente 2 recibe los textos completos además del mapa contextual
-El mapa contextual del Agente 1 funciona como guía de lectura — le indica al Agente 2 dónde mirar y cómo relacionar las secciones — pero los textos son la fuente de verdad. Si el Agente 1 omitiera alguna sección o la describiera de forma imprecisa, el Agente 2 puede resolverlo consultando los textos directamente. La compensación es un mayor volumen de tokens por llamada, aceptable dado que la prioridad es la exhaustividad del análisis legal sobre la optimización de costo.
+El pipeline tiene varias etapas dependientes entre si y varias llamadas a modelos. Langfuse permite registrar una traza raiz y spans por etapa para inspeccionar inputs, outputs, latencia y uso de tokens. Eso facilita auditoria, debugging y analisis de costos.
 
-### Por qué se usan dos capas de validación: with_structured_output() y model_validate()
-`with_structured_output()` garantiza que el LLM produzca JSON conforme al schema Pydantic antes de la deserialización. `model_validate()` se ejecuta como verificación explícita adicional sobre el resultado ya parseado, permitiendo capturar y loguear cualquier `ValidationError` con contexto detallado antes de propagar el error. Esta doble validación es la más robusta para un entorno donde los datos malformados tienen consecuencias legales reales.
 
----
+### Manejo de errores y validacion defensiva
 
-## Interacción entre agentes (Handoff Pattern)
+Los agentes pueden devolver salidas parciales o con formatos distintos segun la version de las librerias y el comportamiento del modelo. Por eso el pipeline revalida los resultados, tolera algunas variaciones controladas y falla de forma explicita cuando no puede garantizar una salida consistente.
 
-El pipeline utiliza un **Handoff Pattern** de dos etapas: el **Agente 1 (Analista Senior)** recibe ambos documentos y construye un mapa contextual estructurado — identificando tipo de documento, partes y correspondencia entre cláusulas — que luego pasa como contexto al **Agente 2 (Auditor Legal)**. Este, a su vez, compara el contrato original contra la enmienda cláusula por cláusula y genera un `ContractChangeOutput` validado por Pydantic. La separación estricta de responsabilidades evita que cada agente asuma tareas fuera de su especialidad, lo que reduce alucinaciones y aumenta la exhaustividad del análisis.
+En particular, se usan dos capas de validacion sobre la salida estructurada. `with_structured_output()` orienta al modelo a responder con el schema esperado, mientras que `model_validate()` vuelve a validar el resultado del lado de la aplicacion. Esta verificacion adicional permite detectar campos faltantes, tipos incorrectos o respuestas parcialmente parseadas antes de continuar el flujo.
 
-```mermaid
-sequenceDiagram
-    participant O as 📄 Texto Original
-    participant A as 📄 Texto Enmienda
-    participant AG1 as 🧠 Agente 1<br/>Analista Senior
-    participant MAP as 📋 Mapa Contextual
-    participant AG2 as 🔎 Agente 2<br/>Auditor Legal
-    participant OUT as ✅ Output Validado
+### Por que el parsing de imagenes es secuencial y no paralelo
 
-    Note over AG1: System Prompt:<br/>"Eres un Analista Senior<br/>de Contratos Legales con<br/>15 años de experiencia..."
+Las dos imagenes podrian procesarse en paralelo porque son independientes, pero hoy el pipeline prioriza simplicidad operativa y trazabilidad clara. Ejecutarlas de forma secuencial mantiene el flujo mas facil de seguir en logs y en Langfuse, reduce complejidad de coordinacion y evita introducir concurrencia antes de que sea realmente necesaria. Si el volumen o la latencia lo justificaran, esta etapa es una candidata natural para paralelizacion futura, por ejemplo usando `asyncio` para lanzar ambos parsings de manera concurrente.
 
-    O->>AG1: Texto completo del contrato original
-    A->>AG1: Texto completo de la enmienda
+## Observabilidad con Langfuse
 
-    AG1->>AG1: Identificar tipo de documento
-    AG1->>AG1: Detectar partes involucradas
-    AG1->>AG1: Mapear secciones de ambos documentos
-    AG1->>AG1: Determinar correspondencia entre secciones
+Langfuse actua como el sistema de trazabilidad del pipeline: cada ejecucion genera una trace raiz (`contract-analysis`) que agrupa todas las etapas bajo un `trace_id` unico. De esa traza cuelgan spans hijos para el parsing del contrato original, el parsing de la enmienda, la contextualizacion y la extraccion. Esta estructura permite inspeccionar en el dashboard que entro a cada etapa, que devolvio y cuanto costo en tiempo y tokens.
 
-    AG1->>MAP: Generar mapa contextual estructurado
+### Spans registrados
 
-    Note over MAP: document_type, parties,<br/>contract_date, general_purpose,<br/>structure_summary con<br/>correspondencia de cláusulas
+Cada ejecucion crea una traza raiz `contract-analysis` con cuatro spans:
 
-    Note over AG2: System Prompt:<br/>"Eres un Auditor Legal<br/>especializado en análisis<br/>de cambios contractuales..."
+- `parse_original_contract`
+- `parse_amendment_contract`
+- `contextualization_agent`
+- `extraction_agent`
 
-    O->>AG2: Texto completo del contrato original
-    A->>AG2: Texto completo de la enmienda
-    MAP->>AG2: Mapa contextual como referencia
+Los spans registran la siguiente informacion:
 
-    AG2->>AG2: Comparar cláusula por cláusula
-    AG2->>AG2: Clasificar: adición / eliminación / modificación
-    AG2->>AG2: Identificar temas legales afectados
-    AG2->>AG2: Redactar resumen detallado
+- `input`
+- `output`
+- `latency_ms`
+- tokens cuando la libreria los expone
+- estado de validacion
 
-    AG2->>OUT: ContractChangeOutput validado por Pydantic
-```
+Detalle por span:
 
-> El Agente 1 nunca extrae cambios — solo construye el contexto. El Agente 2 nunca analiza estructura — solo compara usando el mapa que recibió. Esta separación de responsabilidades reduce alucinaciones y mejora la exhaustividad de la extracción, ya que cada agente se enfoca exclusivamente en su tarea especializada.
+- `parse_original_contract` y `parse_amendment_contract`: registran la imagen de entrada, el tamaño del archivo, el texto extraido y el consumo de tokens de la llamada a GPT-4o Vision.
+- `contextualization_agent`: registra los textos de entrada, el mapa contextual resultante, el tipo de documento detectado, las partes identificadas y la cantidad de secciones mapeadas.
+- `extraction_agent`: registra los textos de entrada, el `context_map`, la salida validada por Pydantic, la cantidad de secciones afectadas, los temas detectados y el estado de validacion.
 
----
+### Metricas por span
 
-## Observabilidad en Langfuse
+- `latency_ms`
+- `prompt_tokens`
+- `completion_tokens`
+- `total_tokens`
+- `text_length`
+- `sections_count`
+- `topics_count`
+- `validation_status`
 
-Langfuse actúa como el sistema de trazabilidad del pipeline: cada ejecución genera una **Trace** raíz (`contract-analysis`) que agrupa todos los pasos bajo un `trace_id` único. De esa traza cuelgan cuatro **Spans** hijos, uno por cada etapa que invoca un LLM externo. Esta estructura permite reconstruir el razonamiento del sistema clic a clic en el dashboard: se puede abrir cualquier span y ver exactamente qué texto llegó al LLM y qué respondió, sin necesidad de logs adicionales.
+### Flujo de instrumentacion
 
-### Jerarquía de trazas
+Cada etapa sigue el mismo patron: se abre un span antes de invocar al modelo, se ejecuta la llamada y luego se cierra el span con el output y la metadata resultantes. Al finalizar el pipeline, `langfuse.flush()` envia los eventos acumulados al servidor.
 
-Cada ejecución construye la siguiente jerarquía en el dashboard de Langfuse:
+La instrumentacion actual es manual usando `trace.span(...)` y `span.end(...)`. No se promete callback tracing automatico de LangChain.
 
-```mermaid
-graph TB
-    subgraph LANGFUSE["📊 Dashboard Langfuse"]
-        TRACE["🔵 Trace: contract-analysis<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>trace_id: uuid<br/>name: contract-analysis<br/>metadata: pipeline_version, input_files"]
+## Limitaciones actuales
 
-        SPAN1["📙 Span: parse_original_contract<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>input: image_path, image_size<br/>output: texto extraído<br/>metadata: text_length, tokens, latency_ms"]
-
-        SPAN2["📙 Span: parse_amendment_contract<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>input: image_path, image_size<br/>output: texto extraído<br/>metadata: text_length, tokens, latency_ms"]
-
-        SPAN3["📗 Span: contextualization_agent<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>input: texto_original + texto_enmienda<br/>output: context_map JSON<br/>metadata: document_type, parties_count,<br/>sections_mapped, tokens, latency_ms"]
-
-        SPAN4["📘 Span: extraction_agent<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>input: textos + context_map<br/>output: ContractChangeOutput JSON<br/>metadata: sections_count, topics_count,<br/>tokens, latency_ms, validation_status"]
-
-        TRACE --> SPAN1
-        TRACE --> SPAN2
-        TRACE --> SPAN3
-        TRACE --> SPAN4
-    end
-```
-
-**Spans registrados:**
-
-- **`parse_original_contract`** y **`parse_amendment_contract`**: corresponden a las dos llamadas a GPT-4o Vision. Cada span registra el path de la imagen de entrada, el tamaño del archivo, el texto extraído y los tokens consumidos.
-- **`contextualization_agent`**: cubre la llamada del Agente 1. Se captura el JSON completo del mapa contextual resultante, el tipo de documento detectado, las partes identificadas y el número de secciones mapeadas.
-- **`extraction_agent`**: cubre la llamada del Agente 2. Se registra el `ContractChangeOutput` validado por Pydantic, el número de cambios detectados, los temas legales afectados y el estado de la validación del schema.
-
-**Métricas disponibles por span:**
-- `latency_ms`: tiempo de respuesta de cada llamada
-- `prompt_tokens` / `completion_tokens`: costo de cada etapa
-- `text_length`: longitud del texto extraído por el parser
-- `sections_count`: número de cambios detectados por el auditor
-
-### Flujo
-
-Cada etapa sigue el mismo patrón: se abre un span antes de llamar al LLM, se ejecuta la llamada, y se cierra el span con el output y la metadata resultantes. Al final, `langfuse.flush()` envía todos los eventos acumulados en el buffer local al servidor en un único batch.
-
-```mermaid
-sequenceDiagram
-    participant MAIN as 🚀 main.py
-    participant LF as 📊 Langfuse SDK
-    participant GPT as 🤖 GPT-4o Vision
-    participant AG1 as 🧠 Agente 1
-    participant AG2 as 🔎 Agente 2
-    participant SERVER as ☁️ Langfuse Server
-
-    MAIN->>LF: langfuse.trace(name="contract-analysis")
-    Note over LF: Trace raíz creada<br/>trace_id: uuid
-
-    MAIN->>LF: trace.span("parse_original_contract")
-    MAIN->>GPT: parse_contract_image(original)
-    GPT-->>MAIN: texto_original + usage
-    MAIN->>LF: span.end(output, metadata)
-
-    MAIN->>LF: trace.span("parse_amendment_contract")
-    MAIN->>GPT: parse_contract_image(amendment)
-    GPT-->>MAIN: texto_enmienda + usage
-    MAIN->>LF: span.end(output, metadata)
-
-    MAIN->>LF: trace.span("contextualization_agent")
-    MAIN->>AG1: run(texto_original, texto_enmienda, trace)
-    AG1-->>MAIN: context_map + usage
-    MAIN->>LF: span.end(output, metadata)
-
-    MAIN->>LF: trace.span("extraction_agent")
-    MAIN->>AG2: run(textos, context_map, trace)
-    AG2-->>MAIN: ContractChangeOutput + usage
-    MAIN->>LF: span.end(output, metadata)
-
-    MAIN->>LF: langfuse.flush()
-    LF->>SERVER: Envío de todos los eventos (batch)
-    SERVER-->>LF: 200 OK
-```
-
-### Detalles de implementación
-
-La integración con Langfuse se realizó de forma explícita y manual (sin auto-instrumentación) para tener control total sobre qué se registra en cada etapa. Los puntos clave son:
-
-**1. Apertura y cierre explícito de spans**
-
-Cada span se abre antes de la llamada al LLM y se cierra inmediatamente después, capturando el `output` real y la `latency_ms` calculada con `time.time()`:
-
-```python
-span = trace.span(name="parse_original_contract", input={"image_path": str(image_path)})
-start = time.time()
-result = parse_contract_image(image_path, client)
-span.end(
-    output={"extracted_text": result},
-    metadata={"text_length": len(result), "latency_ms": round((time.time() - start) * 1000)}
-)
-```
-
-**2. Metadata semántica por etapa**
-
-Cada span incluye metadata específica del dominio, no solo datos técnicos. Por ejemplo, el span de `contextualization_agent` registra `document_type` y `sections_mapped`; el de `extraction_agent` registra `sections_count` y `validation_status`. Esto permite filtrar trazas en Langfuse por criterios de negocio, no solo por latencia o errores.
-
-**3. Flush garantizado al final del pipeline**
-
-La llamada `langfuse.flush()` al final de `main.py` asegura que todos los eventos se envíen al servidor antes de que el proceso termine, evitando pérdida de trazas en ejecuciones cortas donde el buffer no llega a vaciarse automáticamente.
-
-**4. Propagación de la traza a los agentes**
-
-El objeto `trace` se pasa como parámetro a cada agente (`contextualization_agent.run(... trace=trace)`), lo que permite que los spans hijos queden asociados a la misma traza raíz. Sin esta propagación, cada llamada generaría una traza independiente y se perdería la visión del pipeline completo.
-
-**5. Captura de tokens por etapa**
-
-Los `prompt_tokens` y `completion_tokens` se registran en el metadata de cada span a partir de la respuesta del API de OpenAI (`response.usage`). Esto habilita el cálculo de costo exacto por ejecución directamente desde el dashboard de Langfuse, sin necesidad de instrumentar la facturación por separado.
-
-
----
-
-## Fundamentos del mecanismo de tokenización
-
-### ¿Qué es un token?
-
-Un token es la unidad mínima de procesamiento que el LLM "lee" y "escribe". No equivale a una palabra ni a un carácter; es una secuencia de caracteres frecuentes en el corpus de entrenamiento. GPT-4o usa el tokenizador **o200k_base** (tiktoken), que contiene ~200.000 tokens.
-
-> Los siguientes son ejemplos aproximados. Los valores exactos dependen del contexto y pueden verificarse con `tiktoken` usando el encoding `o200k_base`.
-
-```
-"contrato"      → 1 token
-"confidencialidad" → 3 tokens  (confiden + cial + idad)
-" Cláusula"     → 3 tokens  (espacio + Cl + áusula)
-```
-
-### Por qué importa en este sistema
-
-Cada etapa del pipeline tiene un presupuesto de tokens que afecta directamente el costo y la calidad:
-
-```
-Etapa                    Entrada típica            Tokens aprox.
-─────────────────────────────────────────────────────────────────
-parse_original_contract  imagen 1.5MB (detail=high)  1.000–2.000 prompt
-                                                       500–1.500 completion
-parse_amendment_contract idem                         idem
-contextualization_agent  2 textos (~1.500 chars c/u)  800–1.200 prompt
-                                                       300–600 completion
-extraction_agent         2 textos + context_map       2.000–4.000 prompt
-                                                       500–1.500 completion
-─────────────────────────────────────────────────────────────────
-Total por ejecución                                  ~5.000–10.000 tokens
-Costo estimado GPT-4o                                ~$0.05–$0.10 USD
-```
-
-### Cómo GPT-4o tokeniza imágenes (Vision)
-
-> **Nota:** El mecanismo exacto de tokenización de imágenes varía según la versión del modelo y puede cambiar con actualizaciones de OpenAI. Los valores a continuación son aproximaciones orientativas.
-
-Con `detail="high"`, el modelo analiza la imagen con alta fidelidad. El costo en tokens por imagen depende de su resolución y del mecanismo interno del modelo en uso:
-
-| | `detail="low"` | `detail="high"` |
-|---|---|---|
-| Tokens de imagen | Bajo (fijo) | Mayor, variable según resolución |
-| Costo aprox. por imagen | ~$0.0004 | ~$0.004 |
-| Lectura de texto denso | Deficiente | Precisa |
-
-La diferencia de costo es de ~$0.003 por imagen — prácticamente despreciable. Para texto legal, donde una palabra mal leída puede cambiar el significado de una cláusula, la calidad de lectura no es negociable. Por eso este sistema usa `detail="high"` en ambas etapas de parsing.
-
-### Límite de contexto y ventana efectiva
-
-`gpt-4o` tiene una ventana de **128.000 tokens**. En este sistema el cuello de botella es el `extraction_agent`, que recibe:
-
-```
-context_window = len(system_prompt) + len(context_map_json)
-               + len(original_text) + len(amendment_text)
-               + len(respuesta_esperada)
-```
-
-Para contratos de más de 10 páginas el texto extraído puede superar los 6.000 tokens, lo que aún deja margen holgado. Si el documento supera las 30 páginas, ver [Nivel 3 — Procesamiento de documentos multipágina](#nivel-3----procesamiento-de-documentos-multipágina-contratos-largos).
-
-### Implicaciones para el costo
-
-Langfuse registra `prompt_tokens` y `completion_tokens` por span, lo que permite calcular el costo exacto por ejecución y detectar llamadas anómalas (texto extraído muy largo, loops accidentales, prompts inflados).
-
----
-
-## Optimización de prompts
-
-### Principios aplicados en este sistema
-
-**1. Separación de responsabilidades por agente**
-
-Cada agente tiene un único trabajo declarado en la primera línea del system prompt.
-
-```python
-# ContextualizationAgent — CORRECTO
-"TU RESPONSABILIDAD ÚNICA: construir un mapa contextual preciso."
-
-# Incorrecto (anti-patrón): pedir contexto Y cambios en un solo llamado
-```
-
-**2. Role prompting con credenciales específicas**
-
-Asignar un rol con experiencia concreta mejora la calidad del razonamiento legal:
-
-```python
-# Más efectivo
-"Eres un Analista Senior de Contratos Legales con 15 años de experiencia
-en derecho corporativo internacional."
-
-# Menos efectivo
-"Eres un asistente legal."
-```
-
-**3. Output format explícito con ejemplos inline**
-
-Especificar el formato de salida con ejemplos dentro del prompt elimina ambigüedad y reduce el parsing post-respuesta:
-
-```python
-'"structure_summary": {"Cláusula 1": "presente en ambos",
-                       "Cláusula 7": "nueva en enmienda"}'
-```
-
-**4. Restricciones negativas explícitas**
-
-Decirle al LLM qué NO debe hacer es tan importante como decirle qué sí debe hacer:
-
-```python
-"- NO extraigas cambios de contenido específicos — eso lo hace el agente de extracción."
-"- No inventes cambios — solo reporta lo que puedes verificar en el texto."
-```
-
-**5. Temperatura cero para tareas deterministas**
-
-Ambos agentes y el parser usan `temperature=0`. En análisis legal la reproducibilidad importa más que la creatividad.
-
-**6. Contexto descendente (context injection)**
-
-El `extraction_agent` recibe el mapa del `contextualization_agent` como contexto explícito. Esto reduce el trabajo que el LLM debe hacer "de cero" y enfoca el razonamiento:
-
-```python
-human_content = f"""MAPA CONTEXTUAL (elaborado por el Analista Senior):
----
-{context_str}
----
-CONTRATO ORIGINAL:
-...
-"""
-```
-
-### Técnicas de prompt aplicadas al agente de extracción
-
-| Técnica | Aplicación en este sistema | Ganancia esperada |
-|---|---|---|
-| Chain-of-thought implícito | "Sé exhaustivo: un cambio no detectado puede tener consecuencias legales graves" | Fuerza razonamiento paso a paso sin tokens extras |
-| Anclaje en identificadores exactos | "Usa los identificadores exactos del mapa contextual" | Elimina secciones inventadas |
-| Cuantificación obligatoria | "Para campos numéricos indica el valor anterior y el nuevo" | Previene resúmenes vagos |
-| Priorización por impacto | "Prioriza: indemnizaciones, limitaciones de responsabilidad, plazos, honorarios" | Mejora el orden del summary |
-| Validación downstream con Pydantic | `with_structured_output()` + `model_validate()` | Segunda capa de corrección de formato |
-
-### Propuesta futura: medir la efectividad de un prompt
-
-> **No implementado actualmente.** El sistema registra `pipeline_version` en la trace raíz pero no versiona los prompts individuales. Lo siguiente describe cómo implementarlo.
-
-El objetivo es poder comparar variantes de prompt de forma sistemática desde el dashboard de Langfuse, sin necesidad de herramientas externas.
-
-**Paso 1 — Agregar constante de versión en cada agente**
-
-```python
-# contextualization_agent.py / extraction_agent.py
-PROMPT_VERSION = "v1.0"  # incrementar al modificar SYSTEM_PROMPT
-```
-
-**Paso 2 — Registrar versión y técnica en el `span.end()`**
-
-```python
-span.end(
-    output={...},
-    metadata={
-        "latency_ms": latency_ms,
-        "model": "gpt-4o",
-        "input_tokens": ...,
-        "output_tokens": ...,
-        "prompt_version": PROMPT_VERSION,        # ← agregar
-        "prompt_technique": "role+constraints+examples",  # ← agregar
-    },
-)
-```
-
-**Paso 3 — Comparar versiones en Langfuse**
-
-Con esa metadata registrada, en el dashboard se puede filtrar por `prompt_version` y comparar entre versiones:
-
-| Métrica | Qué mide |
+| Limitacion | Detalle |
 |---|---|
-| `sections_count` promedio | Exhaustividad — cuántos cambios detecta |
-| `latency_ms` promedio | Eficiencia — cuánto tarda el agente |
-| `input_tokens` + `output_tokens` | Costo — tokens consumidos por llamada |
-
-Esto permite decidir objetivamente si una modificación al prompt mejora o degrada el sistema antes de publicarla.
-
----
+| Una pagina por imagen | Cada imagen debe contener una sola pagina. Documentos multipagina deben dividirse manualmente antes de procesar. |
+| Solo 2 documentos | El pipeline compara exactamente un original y una enmienda. No soporta multiples enmiendas encadenadas en una sola ejecucion. |
+| Formatos soportados | `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`. No se aceptan PDFs directamente. |
+| Idioma | El sistema esta optimizado para contratos en español. Puede funcionar en otros idiomas, pero los prompts y validadores estan orientados al dominio legal hispanohablante. |
+| Longitud maxima del texto | `ExtractionAgent` recibe ambos textos junto con el `context_map`. En documentos muy extensos, la suma de tokens puede acercarse al limite del modelo. |
+| Texto ilegible | Si el parser detecta texto ilegible, lo marca como `[ILEGIBLE]`. El agente de extraccion intentara analizar el resto, pero puede omitir cambios en esas zonas. |
+| Dependencia de calidad de escaneo | Imagenes con baja resolucion, sombras, recortes o rotacion pueden degradar el parsing y afectar la extraccion posterior. |
+| Cobertura de tests | El proyecto tiene tests unitarios y coverage basico, pero no cuenta todavia con pruebas end-to-end ni mocks de OpenAI y Langfuse. |
 
 ## Propuesta de escalado
 
-### Punto de partida: Escenario actual (baseline) 
+La arquitectura actual resuelve bien el caso base: un par de documentos, ejecucion local, procesamiento secuencial y salida JSON validada. Si el volumen o la complejidad documental crecieran, el camino natural de evolucion puede pensarse en los siguientes niveles.
 
-```
-1 imagen par → pipeline secuencial → ~30-60 seg → ~$0.05–$0.10 USD
-```
+### Punto de partida: escenario actual
 
-Establece los valores de referencia contra los que se comparan las mejoras: latencia, costo y throughput por ejecución.
+Hoy el pipeline:
 
-En el estado actual el pipeline corre en una sola máquina, de forma **secuencial** (una etapa espera a que termine la anterior) y procesa **un par de documentos por vez**. Los números concretos son:
+- procesa un par de documentos por ejecucion,
+- corre en una sola maquina,
+- ejecuta sus etapas en forma secuencial,
+- y no incluye una API ni una cola de trabajos.
 
-| Métrica | Valor actual |
+| Metrica | Estado actual |
 |---|---|
-| Documentos por ejecución | 1 par (original + enmienda) |
-| Tiempo total estimado | 30–60 segundos |
-| Costo estimado por ejecución | $0.05–$0.10 USD |
-| Throughput | ~1–2 pares/minuto (limitado por secuencialidad) |
-| Infraestructura requerida | Python local, sin servidor |
+| Unidad de procesamiento | 1 par de imagenes por ejecucion |
+| Modo de ejecucion | Secuencial |
+| Infraestructura | Python local |
+| Persistencia | No incluida |
+| Observabilidad | Langfuse con trace raiz y spans por etapa |
 
-Este baseline es correcto y funcional para validación y demos. Las siguientes propuestas escalan según el volumen de uso.
+Este baseline es suficiente para desarrollo local y ejecuciones controladas. A partir de ahi, el escalado mas razonable seria incremental.
 
----
+### Nivel 1 - Paralelizacion interna
 
-### Nivel 1 — Paralelización interna (0–100 pares/día)
+Problema: las dos imagenes se parsean de forma secuencial aunque son independientes.
 
-**Problema**: las dos llamadas de parsing son secuenciales aunque son independientes.
+Propuesta: paralelizar solo la etapa de parsing y mantener igual el resto del pipeline. La opcion mas natural seria una variante asincronica usando `asyncio`, ya que ambas llamadas son I/O-bound y no dependen una de la otra.
 
-**Solución**: ejecutar ambos parsings en paralelo. Hay dos alternativas:
+Beneficios esperados:
 
-**Opción A — `asyncio.gather()` (preferida)**: aprovecha los métodos async de LangChain sin crear threads. Menor overhead para operaciones I/O-bound como llamadas HTTP a OpenAI:
+- menor latencia total por ejecucion,
+- cambios acotados sobre la arquitectura actual,
+- y reaprovechamiento del pipeline existente desde contextualizacion en adelante.
 
-```python
-import asyncio
+Consideracion: esta mejora debe acompañarse con manejo de rate limits y reintentos para no degradar la estabilidad bajo concurrencia.
 
-async def run_pipeline_async(original_path, amendment_path, ...):
-    original_text, amendment_text = await asyncio.gather(
-        parse_contract_image_async(original_path, ...),
-        parse_contract_image_async(amendment_path, ...),
-    )
+### Nivel 2 - API con cola de trabajos
+
+Problema: cuando el volumen aumenta o hay varios usuarios, ejecutar el pipeline desde CLI deja de ser suficiente.
+
+Propuesta: exponer el analisis como servicio y desacoplar recepcion de solicitudes de procesamiento real.
+
+Arquitectura sugerida:
+
+```text
+Cliente -> API HTTP -> Cola de trabajos -> Workers -> Almacen de resultados
 ```
 
-**Opción B — `ThreadPoolExecutor`**: más simple de implementar sin refactorizar a async:
+Componentes posibles:
 
-```python
-from concurrent.futures import ThreadPoolExecutor
-
-with ThreadPoolExecutor(max_workers=2) as executor:
-    fut_original  = executor.submit(parse_contract_image, original_path, ...)
-    fut_amendment = executor.submit(parse_contract_image, amendment_path, ...)
-    original_text  = fut_original.result()
-    amendment_text = fut_amendment.result()
-```
-
-**Ganancia estimada**: reducción de latencia total del 30–40% sin cambiar infraestructura.
-
-> **Consideración**: OpenAI aplica rate limits por minuto (TPM/RPM). Con pocas ejecuciones paralelas no hay problema, pero a partir de ~10 llamadas simultáneas pueden aparecer errores 429. Implementar retry con backoff exponencial como precaución.
-
----
-
-### Nivel 2 — API con cola de trabajos (100–1.000 pares/día)
-
-**Arquitectura**:
-
-```
-Cliente HTTP
-    │
-    ▼
-FastAPI (POST /analyze)
-    │
-    ▼
-Cola de mensajes (Redis / RabbitMQ / SQS)
-    │
-    ├──► Worker 1: run_pipeline()
-    ├──► Worker 2: run_pipeline()
-    └──► Worker N: run_pipeline()
-    │
-    ▼
-Base de datos de resultados (PostgreSQL)
-    │
-    ▼
-GET /result/{job_id}  ←── polling del cliente
-```
-
-**Componentes nuevos**:
-
-| Componente | Tecnología sugerida | Rol |
+| Componente | Opcion sugerida | Rol |
 |---|---|---|
-| API Gateway | FastAPI + Pydantic | Validación de entrada, autenticación |
-| Cola | Redis Streams / AWS SQS | Desacoplamiento productor/consumidor |
-| Workers | Celery / ARQ / AWS Lambda | Ejecución paralela del pipeline |
-| Almacenamiento de imágenes | AWS S3 / GCS | Evitar transferencia base64 en memoria |
-| Resultados | PostgreSQL + pgvector | Historial + búsqueda semántica futura |
-| Observabilidad | Langfuse (ya integrado) | Sin cambios necesarios |
+| API | FastAPI | Recibir solicitudes y validar entrada |
+| Cola | Redis / RabbitMQ / SQS | Desacoplar productor y consumidor |
+| Workers | Celery / RQ / procesos dedicados | Ejecutar `run_pipeline()` en paralelo |
+| Resultados | PostgreSQL | Persistir estado y salida JSON |
+| Archivos | S3 o almacenamiento equivalente | Evitar dependencia de paths locales |
 
-**Cambio clave en el pipeline**: reemplazar lectura de archivo local por descarga desde S3:
+Beneficios esperados:
 
-```python
-# Actual
-b64 = base64.b64encode(Path(image_path).read_bytes())
+- mayor throughput,
+- soporte multiusuario,
+- reintentos controlados,
+- y mejor trazabilidad operativa.
 
-# Escalado
-import boto3
-s3 = boto3.client("s3")
-obj = s3.get_object(Bucket=bucket, Key=key)
-b64 = base64.b64encode(obj["Body"].read())
+### Nivel 3 - Soporte para documentos multipagina
+
+Problema: el proyecto actual asume una imagen por documento, pero los contratos reales suelen tener multiples paginas.
+
+Propuesta: agregar una etapa previa de particionado y ensamblado.
+
+Flujo sugerido:
+
+```text
+PDF o TIFF -> dividir en paginas -> parsear cada pagina -> unir texto -> pipeline actual
 ```
 
-**Mejoras adicionales recomendadas para este nivel:**
+Puntos clave:
 
-- **Webhooks en lugar de polling**: en vez de que el cliente pregunte repetidamente por el resultado (`GET /result/{job_id}`), el servidor notifica al cliente cuando el job termina. Reduce carga innecesaria y mejora la experiencia.
-- **Dead Letter Queue (DLQ)**: los jobs que fallan después de N reintentos se envían a una cola separada para revisión manual, evitando pérdida silenciosa de ejecuciones fallidas.
+- convertir cada pagina en imagen antes del parsing,
+- preservar saltos de pagina o separadores estructurales,
+- y evitar cortes arbitrarios en medio de una clausula.
 
----
+Si el volumen de texto crece demasiado, una evolucion posterior seria hacer chunking por secciones o clausulas en vez de concatenar todo linealmente.
 
-### Nivel 3 — Procesamiento de documentos multipágina (contratos largos)
+### Nivel 4 - Persistencia y auditoria historica
 
-**Problema**: contratos reales suelen tener 20–80 páginas. Una sola imagen no alcanza para preservar toda la resolución.
+Problema: cuando se procesan muchos contratos, deja de alcanzar con devolver el JSON y descartarlo.
 
-**Solución — Chunking por sección**:
+Propuesta: persistir resultados y metadata de ejecucion para consulta historica.
 
-```
-PDF/TIFF multipágina
-    │
-    ▼
-Splitter: divide en páginas individuales (pdf2image / pypdfium2)
-    │
-    ├──► página 1 → parse_contract_image()
-    ├──► página 2 → parse_contract_image()
-    └──► página N → parse_contract_image()
-    │
-    ▼
-Merger: concatena textos preservando saltos de página
-    │
-    ▼
-Pipeline actual (contextualization + extraction)
-```
+Capacidades a incorporar:
 
-**Consideración de tokens**: con 80 páginas, el texto concatenado puede superar 40.000 tokens. Estrategias:
-- Usar `gpt-4o` (128k context) — sin cambios, funciona hasta ~30–50 págs. según densidad del texto (un contrato denso puede superar los 50.000 tokens de texto solo con 40 páginas).
-- Para documentos mayores: chunking semántico por cláusula + map-reduce sobre extraction_agent.
+- historial de ejecuciones por contrato,
+- filtros por `sections_changed`,
+- filtros por `topics_touched`,
+- registro de errores y fallos recurrentes,
+- y almacenamiento del output validado junto con metadata operativa.
 
-> **Cuidado con los límites de página**: si se divide el documento por página exacta, una cláusula puede quedar partida entre dos chunks. El splitter debería detectar saltos de cláusula (por encabezados o numeración) en lugar de cortar por página fija.
+Esto transforma al pipeline en una base util para auditoria, reporting y seguimiento operativo.
 
----
+### Nivel 5 - Optimizacion de costo y ruteo por complejidad
 
-### Nivel 4 — Búsqueda y auditoría histórica (1.000+ pares/día)
+Problema: no todos los documentos requieren la misma estrategia de procesamiento.
 
-**Problema**: en una firma legal se procesan cientos de contratos. Necesitan buscar "todos los contratos donde cambió la cláusula de confidencialidad".
+Propuesta: incorporar una etapa previa que clasifique complejidad documental y enrute la ejecucion segun señales como:
 
-**Solución — Vector store + RAG**:
+- cantidad de paginas,
+- longitud del texto extraido,
+- presencia de tablas o baja legibilidad,
+- y cantidad de secciones detectadas.
 
-```
-ContractChangeOutput
-    │
-    ├── summary_of_the_change ──► embed (text-embedding-3-small)
-    │                              └──► pgvector / Pinecone
-    │
-    └── sections_changed, topics_touched ──► índice filtrable
-                                             (Elasticsearch / PostgreSQL FTS)
+Con esa informacion, se podria:
 
-Consulta:
-  "contratos con cambios en honorarios mayores a $5.000"
-      │
-      ▼
-  Búsqueda híbrida (vector + filtro estructurado)
-      │
-      ▼
-  Top-K resultados con score de relevancia
-```
+- usar una estrategia mas economica para documentos simples,
+- reservar la configuracion mas exigente para documentos complejos,
+- o variar el modelo entre parsing, contextualizacion y extraccion.
 
----
+### Resumen de hoja de ruta
 
-### Nivel 5 — Multi-modelo y reducción de costos
+| Nivel | Objetivo principal | Cambio dominante |
+|---|---|---|
+| 1 | Reducir latencia por ejecucion | Paralelizar parsings |
+| 2 | Aumentar throughput | API + cola + workers |
+| 3 | Soportar contratos largos | Multipagina + ensamblado |
+| 4 | Mejorar trazabilidad historica | Persistencia y auditoria |
+| 5 | Optimizar costo operativo | Ruteo por complejidad |
 
-Para reducir costos en producción sin sacrificar calidad crítica:
+## Tests
 
-```
-Estrategia de enrutamiento por complejidad:
+La suite actual esta basada en `unittest` y cubre validaciones de los modelos Pydantic. Ademas, el proyecto incluye `coverage` para medir la cobertura sobre el codigo de `src/` usando la configuracion de [`.coveragerc`](/Users/mauroorias/Documents/henry/aem4/.coveragerc).
 
-Clasificador previo (tokens extraídos, nº páginas, presencia de tablas)
-    │
-    ├── doc simple (1 pág, texto claro) ──► gpt-4o-mini
-    └── doc complejo (multipág, tablas) ──► gpt-4o
-
-contextualization_agent ──► gpt-4o-mini  (tarea estructurada, baja ambigüedad)
-extraction_agent        ──► gpt-4o       (tarea crítica, máxima precisión)
-```
-
-> **Precios referenciales** (pueden variar): `gpt-4o-mini` ~$0.15/1M tokens input, `gpt-4o` ~$2.50/1M tokens input. Verificar precios actuales en [platform.openai.com/pricing](https://platform.openai.com/pricing) antes de estimar costos.
-
-> **Requisito previo**: el enrutamiento necesita un **clasificador de complejidad** antes del parsing. La forma más simple es contar páginas del PDF o tokens del texto extraído en una primera pasada ligera, y decidir qué modelo usar en función de ese valor.
-
-**Ahorro estimado**: 40–60% de reducción de costo por ejecución con calidad equivalente en el 80% de los documentos.
-
----
-
-### Resumen de la hoja de ruta de escalado
-
-```
-Volumen          Nivel  Cambio principal                  Esfuerzo    Costo operativo
-──────────────────────────────────────────────────────────────────────────────────────
-< 100 pares/día    1    Paralelizar los 2 parsers          1 día       Sin cambio
-100–1K pares/día   2    FastAPI + cola + workers           1 semana    +$$ (infra)
-1K–10K pares/día   3    Soporte PDF multipágina + chunking 1 semana    +$ (más tokens)
-> 10K pares/día    4    Vector store + búsqueda histórica  2 semanas   +$$$ (BD + embed)
-Optimización       5    Enrutamiento multi-modelo          3 días      -40–60% (ahorro)
-```
-
----
-
-## Limitaciones conocidas
-
-| Limitación | Detalle |
-|---|---|
-| **Una página por imagen** | Cada imagen debe contener una sola página. Documentos multipágina deben dividirse manualmente antes de procesar. |
-| **Solo 2 documentos** | El pipeline compara exactamente un original y una enmienda. No soporta múltiples enmiendas encadenadas en una sola ejecución. |
-| **Formatos soportados** | `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`. No se aceptan PDFs directamente. |
-| **Idioma** | El sistema está optimizado para contratos en español. Puede funcionar en otros idiomas, pero los prompts y validadores están diseñados para el dominio legal hispanoparlante. |
-| **Longitud máxima del texto** | El `extraction_agent` recibe ambos textos + el mapa contextual. Para contratos muy extensos (>30 páginas divididas en imágenes separadas), la suma de tokens puede acercarse al límite de 128.000 de GPT-4o. |
-| **Texto ilegible** | Si el parser detecta texto ilegible, lo marca como `[ILEGIBLE]`. El agente de extracción intentará analizar el resto, pero puede omitir cambios en esas zonas. |
-
----
-
-## Troubleshooting
-
-### Error: variables de entorno faltantes
-
-```
-EnvironmentError: Faltan variables de entorno requeridas: OPENAI_API_KEY
-```
-
-**Causa:** El archivo `.env` no existe o le faltan claves.
-**Solución:** Verificar que `.env` exista y contenga las tres variables requeridas:
+Ejecutar tests:
 
 ```bash
-cp .env.example .env
-# Editar .env con los valores reales
+python -m unittest discover -s tests
 ```
 
----
+Ejecutar tests con coverage:
 
-### Error: archivo no encontrado
-
-```
-Error: archivo no encontrado: data/test_contracts/documento_1__original.jpg
-```
-
-**Causa:** La ruta pasada como argumento no existe o es incorrecta.
-**Solución:** Verificar que los archivos existen y que el comando se ejecuta desde la raíz del proyecto (`aem4/`).
-
----
-
-### Error: formato de imagen no soportado
-
-```
-ValueError: Formato de imagen no soportado: .pdf
+```bash
+coverage run -m unittest discover -s tests
+coverage report -m
 ```
 
-**Causa:** Se pasó un archivo en formato no soportado.
-**Solución:** Convertir el documento a `.jpg` o `.png` antes de ejecutar. Para PDFs, usar herramientas como `pdftoppm` o cualquier convertidor de PDF a imagen.
+Generar reporte HTML de coverage:
 
----
-
-### Error de validación Pydantic
-
-```
-ValidationError: sections_changed — La lista no puede estar vacía
+```bash
+coverage html
 ```
 
-**Causa:** El LLM devolvió una respuesta que no cumple el schema: listas vacías o resumen demasiado corto (<50 caracteres).
-**Solución:** Suele ocurrir cuando el contrato y la enmienda son idénticos o cuando la imagen tiene muy poco texto. Verificar que las imágenes contienen documentos distintos y que el texto es legible.
-
----
-
-### Rate limit o timeout de OpenAI
-
-```
-RuntimeError: [parse_original_contract] Falló después de 3 intentos: RateLimitError
-```
-
-**Causa:** Se superó el límite de requests por minuto de la API de OpenAI.
-**Solución:** El sistema reintenta automáticamente con backoff exponencial (hasta 3 veces). Si el error persiste, esperar unos minutos o revisar el plan de la cuenta en [platform.openai.com](https://platform.openai.com).
-
----
+El reporte HTML se genera en `coverage_html/index.html`.

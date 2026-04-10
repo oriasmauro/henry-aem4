@@ -61,7 +61,7 @@ class ExtractionAgent:
     """
 
     def __init__(self, model: str = "gpt-4o", temperature: float = 0):
-        self.llm = ChatOpenAI(model=model, temperature=temperature, timeout=60)
+        self.llm = ChatOpenAI(model=model, temperature=temperature)
         self.structured_llm = self.llm.with_structured_output(ContractChangeOutput, include_raw=True)
 
     def run(
@@ -88,6 +88,9 @@ class ExtractionAgent:
         span = parent_trace.span(
             name="extraction_agent",
             input={
+                "original_text": original_text,
+                "amendment_text": amendment_text,
+                "context_map": context_map,
                 "original_text_length": len(original_text),
                 "amendment_text_length": len(amendment_text),
                 "context_map_sections": len(context_map.get("structure_summary", {})),
@@ -123,11 +126,25 @@ Extrae todos los cambios siguiendo el esquema requerido. Sé exhaustivo y precis
         try:
             # Estrategia principal: with_structured_output (validación integrada con LLM)
             raw_output = self.structured_llm.invoke(messages)
-            result: ContractChangeOutput = raw_output["parsed"]
+            parsed_result = raw_output.get("parsed")
+            if parsed_result is None:
+                parsing_error = raw_output.get("parsing_error")
+                raise ValueError(
+                    "El agente extractor no devolvió una salida compatible con "
+                    f"ContractChangeOutput. Detalle: {parsing_error}"
+                )
             usage = (raw_output["raw"].usage_metadata or {}) if raw_output.get("raw") else {}
 
             # Re-validación explícita como capa adicional de seguridad
-            result = ContractChangeOutput.model_validate(result.model_dump())
+            if isinstance(parsed_result, ContractChangeOutput):
+                result = ContractChangeOutput.model_validate(parsed_result.model_dump())
+            elif isinstance(parsed_result, dict):
+                result = ContractChangeOutput.model_validate(parsed_result)
+            else:
+                raise TypeError(
+                    "Tipo inesperado en la salida estructurada del agente extractor: "
+                    f"{type(parsed_result).__name__}"
+                )
 
             latency_ms = int((time.time() - start_time) * 1000)
 
@@ -136,6 +153,7 @@ Extrae todos los cambios siguiendo el esquema requerido. Sé exhaustivo y precis
                     "sections_changed": result.sections_changed,
                     "topics_touched": result.topics_touched,
                     "summary_preview": result.summary_of_the_change[:300],
+                    "validated_output": result.model_dump(),
                 },
                 metadata={
                     "latency_ms": latency_ms,
@@ -144,6 +162,7 @@ Extrae todos los cambios siguiendo el esquema requerido. Sé exhaustivo y precis
                     "topics_count": len(result.topics_touched),
                     "prompt_tokens": usage.get("input_tokens"),
                     "completion_tokens": usage.get("output_tokens"),
+                    "total_tokens": usage.get("total_tokens"),
                     "validation_status": "valid",
                 },
             )
@@ -174,6 +193,9 @@ Extrae todos los cambios siguiendo el esquema requerido. Sé exhaustivo y precis
             logger.error(f"[ExtractionAgent] Error inesperado: {e}")
             span.end(
                 output={"error": str(e)},
-                metadata={"latency_ms": latency_ms},
+                metadata={
+                    "latency_ms": latency_ms,
+                    "validation_status": "failed",
+                },
             )
             raise

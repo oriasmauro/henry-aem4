@@ -3,16 +3,14 @@ main.py — LegalMove: Pipeline autónomo de comparación de contratos.
 
 Uso:
     python -m src.main <ruta_imagen_original> <ruta_imagen_enmienda>
-
-Ejemplo:
-    python -m src.main data/test_contracts/documento_1__original.jpg \\
-                       data/test_contracts/documento_1__enmienda.jpg
+    python -m src.main <ruta_imagen_original> <ruta_imagen_enmienda> --pretty
 """
 
-import sys
-import os
+import argparse
 import json
 import logging
+import os
+import sys
 import time
 from pathlib import Path
 
@@ -20,75 +18,55 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── Validar variables de entorno antes de cualquier import que las requiera ───
 _REQUIRED_VARS = [
     "OPENAI_API_KEY",
     "LANGFUSE_PUBLIC_KEY",
     "LANGFUSE_SECRET_KEY",
 ]
 
+
 def _validate_env() -> None:
-    missing = [v for v in _REQUIRED_VARS if not os.getenv(v)]
+    missing = [var for var in _REQUIRED_VARS if not os.getenv(var)]
     if missing:
         raise EnvironmentError(
             f"Faltan variables de entorno requeridas: {', '.join(missing)}\n"
             "Copia .env.example a .env y completa los valores."
         )
 
+
 _validate_env()
 
-# ── Imports después de validar el entorno ─────────────────────────────────────
-from openai import OpenAI
 from langfuse import Langfuse
+from openai import OpenAI
 
-from src.image_parser import parse_contract_image
 from src.agents import ContextualizationAgent, ExtractionAgent
+from src.image_parser import parse_contract_image
 from src.models import ContractChangeOutput
 
-# ── Configuración de logging ──────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("legalmove")
 
 
 def run_pipeline(original_image_path: str, amendment_image_path: str) -> ContractChangeOutput:
-    """
-    Ejecuta el pipeline completo de comparación de contratos LegalMove.
-
-    Etapas del pipeline:
-        1. parse_original_contract  — GPT-4o Vision sobre imagen original
-        2. parse_amendment_contract — GPT-4o Vision sobre imagen de enmienda
-        3. contextualization_agent  — Construye mapa contextual estructural
-        4. extraction_agent         — Extrae y valida todos los cambios
-
-    Todas las etapas emiten spans hijos de Langfuse bajo el trace raíz "contract-analysis".
-
-    Args:
-        original_image_path: Path a la imagen del contrato original.
-        amendment_image_path: Path a la imagen de la enmienda.
-
-    Returns:
-        ContractChangeOutput validado con secciones, temas y resumen.
-    """
-    # ── Clientes ──────────────────────────────────────────────────────────────
+    """Ejecuta el pipeline completo y devuelve un output validado por Pydantic."""
     openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
     langfuse_client = Langfuse(
         public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
         secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
         host=os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
     )
 
-    # ── Trace root ────────────────────────────────────────────────────────────
     trace = langfuse_client.trace(
         name="contract-analysis",
         metadata={
             "original_image": original_image_path,
             "amendment_image": amendment_image_path,
-            "pipeline_version": "1.0.0",
+            "pipeline_version": "1.1.0",
+            "output_mode": "json",
         },
     )
 
@@ -97,122 +75,148 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
     amendment_size_kb = round(Path(amendment_image_path).stat().st_size / 1024, 1)
 
     logger.info("=" * 60)
-    logger.info("LegalMove — Análisis de Contratos")
-    logger.info(f"  trace_id : {trace.id}")
-    logger.info(f"  Original : {original_image_path} ({original_size_kb} KB)")
-    logger.info(f"  Enmienda : {amendment_image_path} ({amendment_size_kb} KB)")
+    logger.info("LegalMove - Analisis de Contratos")
+    logger.info("  trace_id : %s", trace.id)
+    logger.info("  Original : %s (%s KB)", original_image_path, original_size_kb)
+    logger.info("  Enmienda : %s (%s KB)", amendment_image_path, amendment_size_kb)
     logger.info("=" * 60)
 
-    # ── Paso 1: Parsear contrato original ─────────────────────────────────────
-    logger.info("[1/4] Parsing contrato original (GPT-4o Vision)...")
-    original_text = parse_contract_image(
-        image_path=original_image_path,
-        openai_client=openai_client,
-        langfuse_client=langfuse_client,
-        parent_trace=trace,
-        span_name="parse_original_contract",
-    )
-    logger.info(f"      OK — {len(original_text)} caracteres extraídos")
-
-    # ── Paso 2: Parsear enmienda ───────────────────────────────────────────────
-    logger.info("[2/4] Parsing enmienda (GPT-4o Vision)...")
-    amendment_text = parse_contract_image(
-        image_path=amendment_image_path,
-        openai_client=openai_client,
-        langfuse_client=langfuse_client,
-        parent_trace=trace,
-        span_name="parse_amendment_contract",
-    )
-    logger.info(f"      OK — {len(amendment_text)} caracteres extraídos")
-
-    # ── Paso 3: Agente de contextualización ───────────────────────────────────
-    logger.info("[3/4] Agente 1 — Construyendo mapa contextual...")
-    context_agent = ContextualizationAgent(model="gpt-4o")
-    context_map = context_agent.run(
-        original_text=original_text,
-        amendment_text=amendment_text,
-        parent_trace=trace,
-    )
-    logger.info(f"      OK — Tipo: {context_map.get('document_type', 'N/A')}")
-    logger.info(f"           Fecha: {context_map.get('contract_date', 'N/A')}")
-    logger.info(f"           Partes: {', '.join(context_map.get('parties', [])) or 'N/A'}")
-    logger.info(f"           Secciones mapeadas: {len(context_map.get('structure_summary', {}))}")
-
-    # ── Paso 4: Agente de extracción ──────────────────────────────────────────
-    logger.info("[4/4] Agente 2 — Extrayendo y validando cambios...")
-    extraction_agent = ExtractionAgent(model="gpt-4o")
     try:
-        result: ContractChangeOutput = extraction_agent.run(
+        logger.info("[1/4] Parsing contrato original (GPT-4o Vision)...")
+        original_text = parse_contract_image(
+            image_path=original_image_path,
+            openai_client=openai_client,
+            langfuse_client=langfuse_client,
+            parent_trace=trace,
+            span_name="parse_original_contract",
+        )
+        logger.info("      OK - %s caracteres extraidos", len(original_text))
+
+        logger.info("[2/4] Parsing enmienda (GPT-4o Vision)...")
+        amendment_text = parse_contract_image(
+            image_path=amendment_image_path,
+            openai_client=openai_client,
+            langfuse_client=langfuse_client,
+            parent_trace=trace,
+            span_name="parse_amendment_contract",
+        )
+        logger.info("      OK - %s caracteres extraidos", len(amendment_text))
+
+        logger.info("[3/4] Agente 1 - Construyendo mapa contextual...")
+        context_agent = ContextualizationAgent(model="gpt-4o")
+        context_map = context_agent.run(
+            original_text=original_text,
+            amendment_text=amendment_text,
+            parent_trace=trace,
+        )
+        logger.info("      OK - Tipo: %s", context_map.get("document_type", "N/A"))
+        logger.info("           Fecha: %s", context_map.get("contract_date", "N/A"))
+        logger.info(
+            "           Partes: %s",
+            ", ".join(context_map.get("parties", [])) or "N/A",
+        )
+        logger.info(
+            "           Secciones mapeadas: %s",
+            len(context_map.get("structure_summary", {})),
+        )
+
+        logger.info("[4/4] Agente 2 - Extrayendo y validando cambios...")
+        extraction_agent = ExtractionAgent(model="gpt-4o")
+        result = extraction_agent.run(
             original_text=original_text,
             amendment_text=amendment_text,
             context_map=context_map,
             parent_trace=trace,
         )
-        if not result.sections_changed and not result.topics_touched:
-            logger.info("      OK — Sin cambios detectados entre los documentos")
-        else:
-            logger.info(f"      OK — {len(result.sections_changed)} secciones modificadas: {', '.join(result.sections_changed)}")
-            logger.info(f"           {len(result.topics_touched)} temas afectados: {', '.join(result.topics_touched)}")
+
         trace.update(
             output=result.model_dump(),
             metadata={
+                "status": "success",
                 "sections_changed_count": len(result.sections_changed),
                 "topics_touched_count": len(result.topics_touched),
                 "document_type": context_map.get("document_type"),
             },
         )
         return result
-    except Exception as e:
-        logger.error(f"      ERROR — {e}")
-        trace.update(metadata={"error": str(e)})
+    except Exception as exc:
+        logger.error("Pipeline fallido: %s", exc)
+        trace.update(
+            output={"error": str(exc)},
+            metadata={"status": "failed", "error": str(exc)},
+        )
         raise
     finally:
         langfuse_client.flush()
         elapsed = round(time.time() - pipeline_start, 1)
-        logger.info(f"Pipeline completado en {elapsed}s — Traza: https://cloud.langfuse.com/trace/{trace.id}")
+        logger.info(
+            "Pipeline completado en %ss - Traza: https://cloud.langfuse.com/trace/%s",
+            elapsed,
+            trace.id,
+        )
 
 
-def _print_result(result: ContractChangeOutput) -> None:
-    """Imprime el resultado final formateado en stdout."""
-    print("\n" + "=" * 60)
-    print("RESULTADO DEL ANÁLISIS")
-    print("=" * 60)
+def _render_pretty(result: ContractChangeOutput) -> str:
+    lines = [
+        "=" * 60,
+        "RESULTADO DEL ANALISIS",
+        "=" * 60,
+        "",
+        "Secciones modificadas:",
+    ]
+    if result.sections_changed:
+        lines.extend(f"  - {section}" for section in result.sections_changed)
+    else:
+        lines.append("  - No se detectaron cambios")
 
-    print("\nSecciones modificadas:")
-    for s in result.sections_changed:
-        print(f"  • {s}")
+    lines.extend(["", "Temas afectados:"])
+    if result.topics_touched:
+        lines.extend(f"  - {topic}" for topic in result.topics_touched)
+    else:
+        lines.append("  - No se detectaron temas afectados")
 
-    print("\nTemas afectados:")
-    for t in result.topics_touched:
-        print(f"  • {t}")
+    lines.extend(
+        [
+            "",
+            "Resumen de cambios:",
+            "-" * 60,
+            result.summary_of_the_change,
+            "=" * 60,
+        ]
+    )
+    return "\n".join(lines)
 
-    print("\nResumen de cambios:")
-    print("-" * 60)
-    print(result.summary_of_the_change)
-    print("=" * 60)
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Compara un contrato original con su enmienda y devuelve JSON validado."
+    )
+    parser.add_argument("original_image", help="Ruta a la imagen del contrato original.")
+    parser.add_argument("amendment_image", help="Ruta a la imagen de la enmienda.")
+    parser.add_argument(
+        "--pretty",
+        action="store_true",
+        help="Imprime una vista legible para humanos en lugar del JSON estructurado.",
+    )
+    return parser
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
-        print("Uso: python src/main.py <original_image> <amendment_image>")
-        print()
-        print("Ejemplos:")
-        print("  python src/main.py data/test_contracts/documento_1__original.jpg \\")
-        print("                     data/test_contracts/documento_1__enmienda.jpg")
-        sys.exit(1)
-
-    original_path = sys.argv[1]
-    amendment_path = sys.argv[2]
-
-    # Validar paths de entrada
-    for path in [original_path, amendment_path]:
+    args = _build_parser().parse_args()
+    for path in [args.original_image, args.amendment_image]:
         if not Path(path).exists():
-            print(f"Error: archivo no encontrado: {path}")
-            sys.exit(1)
+            raise FileNotFoundError(f"Archivo no encontrado: {path}")
 
-    result = run_pipeline(original_path, amendment_path)
-    _print_result(result)
+    result = run_pipeline(args.original_image, args.amendment_image)
+    if args.pretty:
+        print(_render_pretty(result))
+    else:
+        print(json.dumps(result.model_dump(), indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+        sys.exit(1)

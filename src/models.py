@@ -1,8 +1,55 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+class ContextMap(BaseModel):
+    """Salida estructurada del agente de contextualización."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    document_type: str = Field(
+        description="Tipo de contrato o acuerdo detectado en los documentos."
+    )
+    parties: list[str] = Field(
+        default_factory=list,
+        description="Partes involucradas, idealmente con su rol contractual."
+    )
+    contract_date: str = Field(
+        default="No identificada",
+        description="Fecha del contrato original tal como aparece en el documento."
+    )
+    general_purpose: str = Field(
+        default="Propósito general no identificado.",
+        description="Resumen breve del propósito general del contrato."
+    )
+    structure_summary: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Mapa de secciones entre original y enmienda. "
+            "Ejemplo: {'Cláusula 1': 'presente en ambos'}."
+        )
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_structure_summary(cls, data):
+        if not isinstance(data, dict):
+            return data
+
+        if "structure_summary" not in data:
+            for alias in ("section_mapping", "sections_map", "sections_summary", "clause_mapping"):
+                if alias in data and isinstance(data[alias], dict):
+                    data["structure_summary"] = data[alias]
+                    break
+            else:
+                data["structure_summary"] = {}
+
+        return data
 
 
 class ContractChangeOutput(BaseModel):
     """Schema de salida validado para el análisis de cambios contractuales."""
+
+    model_config = ConfigDict(extra="forbid")
 
     sections_changed: list[str] = Field(
         description=(
@@ -27,6 +74,7 @@ class ContractChangeOutput(BaseModel):
     @field_validator("summary_of_the_change")
     @classmethod
     def summary_min_length(cls, v: str) -> str:
-        if len(v) < 50:
+        cleaned = v.strip()
+        if len(cleaned) < 50:
             raise ValueError("El resumen es demasiado corto — debe incluir una descripción detallada.")
-        return v
+        return cleaned
