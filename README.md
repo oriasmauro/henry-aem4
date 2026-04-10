@@ -34,8 +34,8 @@ Este diagrama resume la arquitectura lógica del sistema: dos entradas visuales 
 
 ```mermaid
 flowchart LR
-    A[Imagen contrato original] --> B[parse_contract_image]
-    C[Imagen enmienda] --> D[parse_contract_image]
+    A[Imagen contrato original] --> B[Parsing multimodal original<br/>GPT-4o Vision]
+    C[Imagen enmienda] --> D[Parsing multimodal enmienda<br/>GPT-4o Vision]
     B --> E[ContextualizationAgent]
     D --> E
     E --> F[ExtractionAgent]
