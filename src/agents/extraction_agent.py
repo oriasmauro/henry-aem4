@@ -148,6 +148,18 @@ Extrae todos los cambios siguiendo el esquema requerido. Sé exhaustivo y precis
 
             latency_ms = int((time.time() - start_time) * 1000)
 
+            generation = span.generation(
+                name="extraction_llm_call",
+                model="gpt-4o",
+                input={"system": SYSTEM_PROMPT, "human": human_content},
+                output=result.model_dump(),
+                usage={
+                    "input": usage.get("input_tokens"),
+                    "output": usage.get("output_tokens"),
+                },
+            )
+            generation.end()
+
             span.end(
                 output={
                     "sections_changed": result.sections_changed,

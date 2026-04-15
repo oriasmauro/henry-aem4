@@ -93,47 +93,61 @@ def parse_contract_image(
         try:
             b64, media_type = _encode_image(image_path)
 
+            messages = [
+                {"role": "system", "content": PARSING_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{media_type};base64,{b64}",
+                                "detail": "high",
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": "Extrae el texto completo de este documento contractual.",
+                        },
+                    ],
+                },
+            ]
+
             response = openai_client.chat.completions.create(
                 model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": PARSING_SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{media_type};base64,{b64}",
-                                    "detail": "high",
-                                },
-                            },
-                            {
-                                "type": "text",
-                                "text": "Extrae el texto completo de este documento contractual.",
-                            },
-                        ],
-                    },
-                ],
+                messages=messages,
                 temperature=0,
                 max_tokens=4096,
                 timeout=60,
             )
 
             extracted_text = response.choices[0].message.content
-            finish_reason = response.choices[0].finish_reason
+            finish_reason = response.choices[0].finish_reason # puede ser "stop", "length", "timeout", etc. Indica por qué el modelo terminó su respuesta. Camimo feliz es "stop", pero si es "length" significa que la respuesta fue truncada por límite de tokens, lo cual es importante de detectar para este caso de uso.
             latency_ms = int((time.time() - start_time) * 1000)
             usage = response.usage
 
-            if finish_reason == "length":
+            if finish_reason == "length": #esto sirve para detectar si la respuesta fue truncada por límite de tokens, lo cual es crítico para este caso de uso ya que necesitamos el texto completo del contrato. Si detectamos que fue truncada, lo registramos en el span y lanzamos una excepción para que el pipeline pueda manejarlo adecuadamente (ej: reintentar con un modelo de mayor capacidad o alertar al usuario).
                 raise RuntimeError(
                     f"[{span_name}] La respuesta del modelo fue truncada por limite de tokens."
                 )
 
+            generation = span.generation(
+                name=f"{span_name}_llm_call",
+                model="gpt-4o",
+                input=messages,
+                output=extracted_text,
+                usage={
+                    "input": usage.prompt_tokens if usage else None,
+                    "output": usage.completion_tokens if usage else None,
+                },
+            )
+            generation.end()
+
             span.end(
                 output={
-                    "full_text": extracted_text,
-                    "text_length": len(extracted_text),
-                    "text_preview": extracted_text[:200],
+                    "full_text": extracted_text, # el texto completo extraído (puede ser muy largo)
+                    "text_length": len(extracted_text), # cantidad de caracteres extraídos
+                    "text_preview": extracted_text[:200], # una vista previa de los primeros 200 caracteres para referencia rápida
                 },
                 metadata={
                     "latency_ms": latency_ms,
@@ -152,13 +166,13 @@ def parse_contract_image(
 
         except (RateLimitError, APITimeoutError) as e:
             last_error = e
-            delay = 2.0 * (2 ** attempt)
+            delay = 2.0 * (2 ** attempt)  #esto sirve para implementar un backoff exponencial. El primer reintento esperará 2 segundos, el segundo 4 segundos, el tercero 8 segundos, etc.
             logger.warning(
                 f"[{span_name}] Error de API en intento {attempt + 1}/{max_retries}: {e}. "
                 f"Reintentando en {delay}s..."
             )
             if attempt < max_retries - 1:
-                time.sleep(delay)
+                time.sleep(delay) # si no es el último intento, espera el tiempo calculado antes de reintentar
 
         except RuntimeError as e:
             last_error = e

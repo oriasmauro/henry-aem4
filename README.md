@@ -26,7 +26,7 @@ El objetivo del proyecto es automatizar la comparacion entre un contrato origina
 - `ContextualizationAgent` construye un mapa estructural del documento.
 - `ExtractionAgent` usa ese mapa para extraer cambios contractuales.
 - `ContractChangeOutput` valida la salida final.
-- Langfuse registra una traza raiz y spans hijos por etapa.
+- Langfuse registra una traza raiz, spans hijos por etapa y generations anidadas por llamada al LLM.
 
 ## Arquitectura
 
@@ -215,7 +215,7 @@ El output final no esta pensado solo para lectura humana. Debe ser consumible po
 
 ### Por que usar Langfuse para observabilidad
 
-El pipeline tiene varias etapas dependientes entre si y varias llamadas a modelos. Langfuse permite registrar una traza raiz y spans por etapa para inspeccionar inputs, outputs, latencia y uso de tokens. Eso facilita auditoria, debugging y analisis de costos.
+El pipeline tiene varias etapas dependientes entre si y varias llamadas a modelos. Langfuse permite registrar una traza raiz, spans por etapa y generations anidadas por llamada al LLM para inspeccionar inputs, outputs, latencia y uso de tokens. El calculo de costos en Langfuse requiere usar objetos `generation` con los campos nativos `model` y `usage`; los spans actuan como agrupadores de etapa pero no generan costos por si solos.
 
 
 ### Manejo de errores y validacion defensiva
@@ -232,48 +232,43 @@ Las dos imagenes podrian procesarse en paralelo porque son independientes, pero 
 
 ## Observabilidad con Langfuse
 
-Langfuse actua como el sistema de trazabilidad del pipeline: cada ejecucion genera una trace raiz (`contract-analysis`) que agrupa todas las etapas bajo un `trace_id` unico. De esa traza cuelgan spans hijos para el parsing del contrato original, el parsing de la enmienda, la contextualizacion y la extraccion. Esta estructura permite inspeccionar en el dashboard que entro a cada etapa, que devolvio y cuanto costo en tiempo y tokens.
+Langfuse actua como el sistema de trazabilidad del pipeline: cada ejecucion genera una trace raiz (`contract-analysis`) que agrupa todas las etapas bajo un `trace_id` unico. De esa traza cuelgan spans hijos por etapa, y cada span contiene una generation anidada que representa la llamada concreta al LLM. Esta jerarquia permite inspeccionar en el dashboard que entro a cada etapa, que devolvio y cuanto costo en tiempo, tokens y dinero.
 
-### Spans registrados
+### Jerarquia de observabilidad
 
-Cada ejecucion crea una traza raiz `contract-analysis` con cuatro spans:
+```
+Trace: contract-analysis
+├── Span: parse_original_contract
+│   └── Generation: parse_original_contract_llm_call
+├── Span: parse_amendment_contract
+│   └── Generation: parse_amendment_contract_llm_call
+├── Span: contextualization_agent
+│   └── Generation: contextualization_llm_call
+└── Span: extraction_agent
+    └── Generation: extraction_llm_call
+```
 
-- `parse_original_contract`
-- `parse_amendment_contract`
-- `contextualization_agent`
-- `extraction_agent`
+Los **spans** actuan como agrupadores de etapa: capturan el input de negocio, el output final y la latencia total incluyendo validaciones. Las **generations** capturan la llamada puntual al LLM con `model` y `usage` en los campos nativos que Langfuse necesita para calcular costos.
 
-Los spans registran la siguiente informacion:
+### Informacion registrada por nivel
 
-- `input`
-- `output`
-- `latency_ms`
-- tokens cuando la libreria los expone
-- estado de validacion
+**Spans** (agrupador de etapa):
+- `input`: datos de entrada a la etapa (rutas de imagen, textos, context_map)
+- `output`: resultado final de la etapa (texto extraido, context_map, cambios detectados)
+- `latency_ms`, `validation_status`, metricas de negocio (secciones, temas, etc.)
+- `prompt_tokens` / `completion_tokens` en metadata (util para debug)
 
-Detalle por span:
-
-- `parse_original_contract` y `parse_amendment_contract`: registran la imagen de entrada, el tamaño del archivo, el texto extraido y el consumo de tokens de la llamada a GPT-4o Vision.
-- `contextualization_agent`: registra los textos de entrada, el mapa contextual resultante, el tipo de documento detectado, las partes identificadas y la cantidad de secciones mapeadas.
-- `extraction_agent`: registra los textos de entrada, el `context_map`, la salida validada por Pydantic, la cantidad de secciones afectadas, los temas detectados y el estado de validacion.
-
-### Metricas por span
-
-- `latency_ms`
-- `prompt_tokens`
-- `completion_tokens`
-- `total_tokens`
-- `text_length`
-- `sections_count`
-- `topics_count`
-- `validation_status`
-- `context_map_degraded`
+**Generations** (llamada al LLM, usada por Langfuse para costos):
+- `model`: `"gpt-4o"`
+- `input`: messages enviados al modelo (o `{"system": ..., "human": ...}` para LangChain)
+- `output`: respuesta del modelo
+- `usage.input` / `usage.output`: tokens consumidos en los campos nativos de Langfuse
 
 ### Flujo de instrumentacion
 
-Cada etapa sigue el mismo patron: se abre un span antes de invocar al modelo, se ejecuta la llamada y luego se cierra el span con el output y la metadata resultantes. Al finalizar el pipeline, `langfuse.flush()` envia los eventos acumulados al servidor.
+Cada etapa sigue el mismo patron: se abre un span antes de invocar al modelo, se ejecuta la llamada, se crea y cierra una generation hija con los tokens consumidos, y luego se cierra el span con el output y la metadata resultantes. Al finalizar el pipeline, `langfuse.flush()` envia los eventos acumulados al servidor.
 
-La instrumentacion actual es manual usando `trace.span(...)` y `span.end(...)`. No se promete callback tracing automatico de LangChain.
+La instrumentacion es manual usando `trace.span(...)`, `span.generation(...)` y los metodos `end()` correspondientes. No se usa callback tracing automatico de LangChain.
 
 ## Limitaciones actuales
 

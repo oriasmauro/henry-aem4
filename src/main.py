@@ -145,7 +145,7 @@ def run_pipeline(original_image_path: str, amendment_image_path: str) -> Contrac
         )
         raise
     finally:
-        langfuse_client.flush()
+        langfuse_client.flush() # Asegura que todos los eventos se envíen a Langfuse antes de cerrar la aplicación
         elapsed = round(time.time() - pipeline_start, 1)
         logger.info(
             "Pipeline completado en %ss - Traza: https://cloud.langfuse.com/trace/%s",

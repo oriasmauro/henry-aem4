@@ -1,5 +1,8 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
+"""
+Modelos Pydantic para validar y estructurar las salidas de los agentes y funciones de parsing.
+Estos modelos ayudan a garantizar que la información extraída de los documentos contractuales tenga un formato consistente y cumpla con ciertos criterios de calidad, facilitando su uso en etapas posteriores del pipeline de análisis.
+"""
 
 class ContextMap(BaseModel):
     """Salida estructurada del agente de contextualización."""

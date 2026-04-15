@@ -45,7 +45,7 @@ class ContextualizationAgent:
 
     def __init__(self, model: str = "gpt-4o", temperature: float = 0):
         self.llm = ChatOpenAI(model=model, temperature=temperature)
-        self.structured_llm = self.llm.with_structured_output(ContextMap, include_raw=True)
+        self.structured_llm = self.llm.with_structured_output(ContextMap, include_raw=True) # include_raw=True para obtener metadatos de uso y finish_reason en la respuesta cruda del modelo
 
     def run(
         self,
@@ -77,15 +77,15 @@ ENMIENDA:
 Construye el mapa contextual en formato JSON."""
 
         messages = [
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=human_content),
+            SystemMessage(content=SYSTEM_PROMPT), 
+            HumanMessage(content=human_content), 
         ]
 
         try:
             response = self.structured_llm.invoke(messages)
-            parsed = response.get("parsed")
-            raw_response = response.get("raw")
-            usage = (raw_response.usage_metadata or {}) if raw_response else {}
+            parsed = response.get("parsed") # salida ya parseada y validada contra el schema ContextMap
+            raw_response = response.get("raw") # respuesta cruda del modelo, que incluye metadatos de uso y finish_reason
+            usage = (raw_response.usage_metadata or {}) if raw_response else {} # metadatos de uso del modelo, como tokens consumidos
             latency_ms = int((time.time() - start_time) * 1000)
 
             if parsed is None:
@@ -95,15 +95,27 @@ Construye el mapa contextual en formato JSON."""
                     f"con el schema esperado. Detalle: {parsing_error}"
                 )
 
-            if isinstance(parsed, ContextMap):
-                context_map = parsed.model_dump()
+            if isinstance(parsed, ContextMap): #valido que la salida del modelo cumple con el schema ContextMap. Si es así, extraemos el dict interno con model_dump() para usarlo como context_map. Si no, lanzamos un error de validación que se captura en el except ValidationError para registrar adecuadamente la falla en la traza.
+                context_map = parsed.model_dump() # el método model_dump() de Pydantic convierte la instancia validada de ContextMap en un diccionario plano, que es lo que realmente necesitamos para el procesamiento posterior. Esto nos permite aprovechar la validación estricta de Pydantic mientras mantenemos la flexibilidad de trabajar con diccionarios en el resto del código.
             elif isinstance(parsed, dict):
-                context_map = ContextMap.model_validate(parsed).model_dump()
+                context_map = ContextMap.model_validate(parsed).model_dump() # si el modelo devuelve un dict pero no es una instancia de ContextMap, intentamos validarlo manualmente contra el schema ContextMap. Si no cumple, se lanzará un ValidationError que se captura en el except correspondiente.
             else:
                 raise TypeError(
                     "Tipo inesperado en la salida estructurada del agente de contextualizacion: "
                     f"{type(parsed).__name__}"
                 )
+            generation = span.generation(
+                name="contextualization_llm_call",
+                model="gpt-4o",
+                input={"system": SYSTEM_PROMPT, "human": human_content},
+                output=context_map,
+                usage={
+                    "input": usage.get("input_tokens"),
+                    "output": usage.get("output_tokens"),
+                },
+            )
+            generation.end()
+
             span.end(
                 output={
                     "document_type": context_map.get("document_type"),
@@ -117,7 +129,7 @@ Construye el mapa contextual en formato JSON."""
                     "prompt_tokens": usage.get("input_tokens") if usage else None,
                     "completion_tokens": usage.get("output_tokens") if usage else None,
                     "validation_status": "valid",
-                    "is_degraded": context_map.get("is_degraded", False),
+                    "is_degraded": context_map.get("is_degraded", False), # indicador de si el modelo no pudo construir un mapa contextual confiable, lo cual es importante para que el pipeline pueda decidir si procede con un análisis de cambios más superficial o si alerta al usuario sobre la falta de contexto
                 },
             )
 
@@ -135,7 +147,7 @@ Construye el mapa contextual en formato JSON."""
             )
             return context_map
 
-        except ValidationError as e:
+        except ValidationError as e: # errores de validación al intentar ajustar la salida del modelo al schema ContextMap
             latency_ms = int((time.time() - start_time) * 1000)
             logger.error("[ContextualizationAgent] El output no cumple el schema ContextMap: %s", e)
             span.end(
