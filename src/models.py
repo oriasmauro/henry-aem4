@@ -41,7 +41,7 @@ class ContextMap(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def normalize_structure_summary(cls, data):
+    def normalize_structure_summary(cls, data): # Normaliza posibles variaciones en la clave del resumen de estructura y marca como degradado si no se encuentra información suficiente.
         if not isinstance(data, dict):
             return data
 

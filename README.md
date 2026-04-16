@@ -81,24 +81,28 @@ sequenceDiagram
     P->>L: span parse_original_contract
     P->>O: Envia imagen base64
     O-->>P: Texto extraido
+    P->>L: generation parse_original_contract_llm_call (model, tokens, output)
     P-->>M: original_text
 
     M->>P: parse_contract_image(enmienda)
     P->>L: span parse_amendment_contract
     P->>O: Envia imagen base64
     O-->>P: Texto extraido
+    P->>L: generation parse_amendment_contract_llm_call (model, tokens, output)
     P-->>M: amendment_text
 
     M->>C: run(original_text, amendment_text)
     C->>L: span contextualization_agent
     C->>O: Solicita ContextMap estructurado
     O-->>C: ContextMap
+    C->>L: generation contextualization_llm_call (model, tokens, output)
     C-->>M: context_map
 
     M->>E: run(original_text, amendment_text, context_map)
     E->>L: span extraction_agent
     E->>O: Solicita ContractChangeOutput estructurado
     O-->>E: Output estructurado
+    E->>L: generation extraction_llm_call (model, tokens, output)
     E->>V: model_validate()
     V-->>E: Output validado
     E-->>M: ContractChangeOutput
